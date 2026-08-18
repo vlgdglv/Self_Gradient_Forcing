@@ -12,8 +12,8 @@ HF_CLI="${HF_CLI:-hf}"
 
 mkdir -p checkpoints/init/framewise checkpoints/init/chunkwise checkpoints/framewise checkpoints/chunkwise wan_models prompts
 
-"$HF_CLI" download Wan-AI/Wan2.1-T2V-1.3B --local-dir wan_models/Wan2.1-T2V-1.3B
-"$HF_CLI" download Wan-AI/Wan2.1-T2V-14B --local-dir wan_models/Wan2.1-T2V-14B
+# "$HF_CLI" download Wan-AI/Wan2.1-T2V-1.3B --local-dir wan_models/Wan2.1-T2V-1.3B
+"$HF_CLI" download Wan-AI/Wan2.1-T2V-14B --local-dir /jizhicfs/pkuhetu/bht/model_home/Wan2.1-T2V-14B
 
 # Causal-Forcing initialization checkpoints for SGF training.
 "$HF_CLI" download "$HF_REPO" init/framewise/ar_diffusion.pt --local-dir checkpoints
