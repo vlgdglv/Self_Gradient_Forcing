@@ -32,6 +32,7 @@ from pipeline import (
 )
 from utils.dataset import TextDataset, TextImagePairDataset
 from utils.misc import set_seed
+from utils.teacher_rectification_probe import TeacherRectificationProbe
 
 from demo_utils.memory import gpu, get_cuda_free_memory_gb, DynamicSwapInstaller
 
@@ -151,6 +152,32 @@ if local_rank == 0:
 if dist.is_initialized():
     dist.barrier()
 
+# ---------------------------------------------------------------------------
+# Teacher Rectification Probe — read config section if present
+# ---------------------------------------------------------------------------
+_probe_cfg = getattr(config, "teacher_rectification_probe", None)
+_probe_enabled = bool(getattr(_probe_cfg, "enabled", False)) if _probe_cfg else False
+
+# Latent FPS = pixel_fps / VAE_temporal_compression = 16 / 4 = 4.0 Hz
+_LATENT_FPS = 4.0
+_nfpb = getattr(config, "num_frame_per_block", 1)
+
+# One shared probe instance is recreated per prompt inside the loop (see below).
+# We only read the config values here.
+_probe_kwargs = dict(
+    enabled=_probe_enabled,
+    probe_every_blocks=int(getattr(_probe_cfg, "probe_every_blocks", 4)) if _probe_cfg else 4,
+    window_seconds=float(getattr(_probe_cfg, "window_seconds", 5.0)) if _probe_cfg else 5.0,
+    teacher_timestep=int(getattr(_probe_cfg, "teacher_timestep", 500)) if _probe_cfg else 500,
+    probe_seed=int(getattr(_probe_cfg, "probe_seed", 1234)) if _probe_cfg else 1234,
+    output_dir=str(getattr(_probe_cfg, "output_dir", "outputs/teacher_rectification")) if _probe_cfg else "outputs/teacher_rectification",
+    latent_fps=_LATENT_FPS,
+    num_frame_per_block=_nfpb,
+)
+if _probe_enabled and local_rank == 0:
+    print(f"[TeacherRectProbe] Probe ENABLED. Config: {_probe_kwargs}")
+
+
 def encode(self, videos: torch.Tensor) -> torch.Tensor:
     device, dtype = videos[0].device, videos[0].dtype
     scale = [self.mean.to(device=device, dtype=dtype),
@@ -230,6 +257,25 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         )
 
     sample_report_timing = args.report_timing and i >= 1
+    
+    # Build a fresh probe per prompt (resets rolling buffer and records).
+    sample_id = f"sample{idx:04d}"
+    if _probe_enabled:
+        probe_run_dir = os.path.join(_probe_kwargs["output_dir"], sample_id)
+        rect_probe = TeacherRectificationProbe(
+            **{**_probe_kwargs, "output_dir": probe_run_dir, "sample_id": sample_id}
+        )
+    else:
+        rect_probe = TeacherRectificationProbe(enabled=False)
+
+    # Encode prompt once so we can pass embeddings to the probe (offline scoring).
+    # We rely on the pipeline to re-encode internally; here we just grab the embeds.
+    _prompt_embeds_for_probe = None
+    if _probe_enabled:
+        with torch.inference_mode():
+            _cond = pipeline.text_encoder(text_prompts=prompts)
+            _prompt_embeds_for_probe = _cond["prompt_embeds"].detach().to("cpu")
+
     video, latents = pipeline.inference(
         noise=sampled_noise,
         text_prompts=prompts,
@@ -241,7 +287,12 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         kv_cache_sink=args.kv_cache_sink,
         kv_cache_train_frames=args.kv_cache_train_frames,
         kv_cache_position_mode=args.kv_cache_position_mode,
+        rect_probe=rect_probe,
+        prompt_embeds=_prompt_embeds_for_probe,
     )
+
+    if _probe_enabled:
+        rect_probe.finalize()
     if sample_report_timing:
         latency = pipeline.first_chunk_time
         elapsed = pipeline.last_generation_time

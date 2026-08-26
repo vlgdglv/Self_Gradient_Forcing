@@ -3,7 +3,7 @@ import time
 import torch
 
 from utils.wan_wrapper import WanDiffusionWrapper, WanTextEncoder, WanVAEWrapper
-
+from utils.teacher_rectification_probe import TeacherRectificationProbe
 from demo_utils.memory import gpu, get_cuda_free_memory_gb, DynamicSwapInstaller, move_model_to_device_with_memory_preservation
 import tqdm
 
@@ -77,6 +77,8 @@ class CausalInferencePipeline(torch.nn.Module):
         kv_cache_sink: int = 1,
         kv_cache_train_frames: int = 21,
         kv_cache_position_mode: str = "top_aligned",
+        rect_probe: Optional[TeacherRectificationProbe] = None,
+        prompt_embeds: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Perform inference on the given noise and text prompts.
@@ -286,6 +288,16 @@ class CausalInferencePipeline(torch.nn.Module):
             # Step 3.2: record the model's output
             output[:, current_start_frame:current_start_frame + current_num_frames] = denoised_pred
 
+            # Teacher Rectification Probe — read-only side path, no-op when disabled.
+            if rect_probe is not None and rect_probe.enabled:
+                _rollout_sec = (current_start_frame + current_num_frames) / rect_probe.latent_fps
+                rect_probe.maybe_capture(
+                    final_denoised_block=denoised_pred,
+                    global_block=block_index,
+                    rollout_time_sec=_rollout_sec,
+                    prompt_embeds=prompt_embeds,
+                )
+            
             # Record first-chunk latency (denoising only, before KV cache refresh).
             if report_timing and block_index == 0:
                 torch.cuda.synchronize()
