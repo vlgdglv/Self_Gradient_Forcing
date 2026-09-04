@@ -3,6 +3,7 @@ from .bidirectional_inference import BidirectionalInferencePipeline
 from .causal_diffusion_inference import CausalDiffusionInferencePipeline
 from .causal_inference import CausalInferencePipeline
 from .self_gradient_forcing_training import SelfGradientForcingTrainingPipeline
+from .causal_recache_inference import CausalRecacheInferencePipeline
 from .teacher_forcing_training import TeacherForcingTrainingPipeline
 from .bidirectional_training import BidirectionalTrainingPipeline
 __all__ = [

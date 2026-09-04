@@ -29,6 +29,7 @@ import json
 from pipeline import (
     CausalDiffusionInferencePipeline,
     CausalInferencePipeline,
+    CausalRecacheInferencePipeline,
 )
 from utils.dataset import TextDataset, TextImagePairDataset
 from utils.misc import set_seed
@@ -43,7 +44,8 @@ parser.add_argument("--data_path", type=str, help="Path to the dataset")
 parser.add_argument("--output_folder", type=str, help="Output folder")
 parser.add_argument("--num_output_frames", type=int, default=21, help="Number of overlap frames between sliding windows")
 parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA parameters")
-parser.add_argument("--seed", type=int, default=0, help="Random seed")
+parser.add_argument("--seed", type=int, default=42, help="Random seed")
+parser.add_argument("--num_samples", type=int, default=1, help="Number of samples generated per prompt")
 parser.add_argument("--i2v", action="store_true", help="Whether to perform I2V (or T2V by default)")
 parser.add_argument("--report_timing", action="store_true",
                     help="Report per-sample latency and throughput for the current hardware.")
@@ -91,7 +93,11 @@ config = OmegaConf.merge(default_config, config)
 # Initialize pipeline
 if hasattr(config, 'denoising_step_list'):
     # Few-step inference
-    pipeline = CausalInferencePipeline(config, device=device)
+    if getattr(config, 'causal_recache', False):
+        pipeline = CausalRecacheInferencePipeline(config, device=device)
+        # args.output_folder = args.output_folder + "_recache"
+    else:
+        pipeline = CausalInferencePipeline(config, device=device)
 else:
     # Multi-step diffusion inference
     pipeline = CausalDiffusionInferencePipeline(config, device=device)
@@ -140,7 +146,7 @@ if args.report_timing and num_prompts < 2:
     args.report_timing = False
 
 if dist.is_initialized():
-    sampler = DistributedSampler(dataset, shuffle=False, drop_last=True)
+    sampler = DistributedSampler(dataset, shuffle=False, drop_last=False)
 else:
     sampler = SequentialSampler(dataset)
 dataloader = DataLoader(dataset, batch_size=1, sampler=sampler, num_workers=0, drop_last=False)
@@ -155,8 +161,8 @@ if dist.is_initialized():
 # ---------------------------------------------------------------------------
 # Teacher Rectification Probe — read config section if present
 # ---------------------------------------------------------------------------
-_probe_cfg = getattr(config, "teacher_rectification_probe", None)
-_probe_enabled = bool(getattr(_probe_cfg, "enabled", False)) if _probe_cfg else False
+# _probe_cfg = getattr(config, "teacher_rectification_probe", None)
+# _probe_enabled = bool(getattr(_probe_cfg, "enabled", False)) if _probe_cfg else False
 
 # Latent FPS = pixel_fps / VAE_temporal_compression = 16 / 4 = 4.0 Hz
 _LATENT_FPS = 4.0
@@ -164,18 +170,18 @@ _nfpb = getattr(config, "num_frame_per_block", 1)
 
 # One shared probe instance is recreated per prompt inside the loop (see below).
 # We only read the config values here.
-_probe_kwargs = dict(
-    enabled=_probe_enabled,
-    probe_every_blocks=int(getattr(_probe_cfg, "probe_every_blocks", 4)) if _probe_cfg else 4,
-    window_seconds=float(getattr(_probe_cfg, "window_seconds", 5.0)) if _probe_cfg else 5.0,
-    teacher_timestep=int(getattr(_probe_cfg, "teacher_timestep", 500)) if _probe_cfg else 500,
-    probe_seed=int(getattr(_probe_cfg, "probe_seed", 1234)) if _probe_cfg else 1234,
-    output_dir=str(getattr(_probe_cfg, "output_dir", "outputs/teacher_rectification")) if _probe_cfg else "outputs/teacher_rectification",
-    latent_fps=_LATENT_FPS,
-    num_frame_per_block=_nfpb,
-)
-if _probe_enabled and local_rank == 0:
-    print(f"[TeacherRectProbe] Probe ENABLED. Config: {_probe_kwargs}")
+# _probe_kwargs = dict(
+#     enabled=_probe_enabled,
+#     probe_every_blocks=int(getattr(_probe_cfg, "probe_every_blocks", 4)) if _probe_cfg else 4,
+#     window_seconds=float(getattr(_probe_cfg, "window_seconds", 5.0)) if _probe_cfg else 5.0,
+#     teacher_timestep=int(getattr(_probe_cfg, "teacher_timestep", 500)) if _probe_cfg else 500,
+#     probe_seed=int(getattr(_probe_cfg, "probe_seed", 1234)) if _probe_cfg else 1234,
+#     output_dir=str(getattr(_probe_cfg, "output_dir", "outputs/teacher_rectification")) if _probe_cfg else "outputs/teacher_rectification",
+#     latent_fps=_LATENT_FPS,
+#     num_frame_per_block=_nfpb,
+# )
+# if _probe_enabled and local_rank == 0:
+#     print(f"[TeacherRectProbe] Probe ENABLED. Config: {_probe_kwargs}")
 
 
 def encode(self, videos: torch.Tensor) -> torch.Tensor:
@@ -237,10 +243,10 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     else:
         # For text-to-video, batch is just the text prompt
         prompt = batch['prompts'][0]
-        output_path = os.path.join(args.output_folder, f'{prompt[:100]}.mp4')
-        if os.path.exists(output_path):
-            print('Video has been generated. Pass!')
-            continue
+        # output_path = os.path.join(args.output_folder, f'{prompt[:100]}.mp4')
+        # if os.path.exists(output_path):
+        #     print('Video has been generated. Pass!')
+        #     continue
         extended_prompt = batch['extended_prompts'][0] if 'extended_prompts' in batch else None
         if extended_prompt is not None:
             prompts = [extended_prompt] 
@@ -251,67 +257,83 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         # Per-prompt seed offset: each prompt gets its OWN reproducible noise
         # (seed + global prompt index), independent of GPU count / sharding /
         # skips. Change --seed to sweep a different noise set across all prompts.
-        set_seed(args.seed + idx)
-        sampled_noise = torch.randn(
-            [1, args.num_output_frames, 16, 60, 104], device=device, dtype=torch.bfloat16
-        )
+        # set_seed(args.seed + idx)
+        # sampled_noise = torch.randn(
+        #     [1, args.num_output_frames, 16, 60, 104], device=device, dtype=torch.bfloat16
+        # )
 
     sample_report_timing = args.report_timing and i >= 1
     
     # Build a fresh probe per prompt (resets rolling buffer and records).
-    sample_id = f"sample{idx:04d}"
-    if _probe_enabled:
-        probe_run_dir = os.path.join(_probe_kwargs["output_dir"], sample_id)
-        rect_probe = TeacherRectificationProbe(
-            **{**_probe_kwargs, "output_dir": probe_run_dir, "sample_id": sample_id}
-        )
-    else:
-        rect_probe = TeacherRectificationProbe(enabled=False)
+    # sample_id = f"sample{idx:04d}"
+    # if _probe_enabled:
+    #     probe_run_dir = os.path.join(_probe_kwargs["output_dir"], sample_id)
+    #     rect_probe = TeacherRectificationProbe(
+    #         **{**_probe_kwargs, "output_dir": probe_run_dir, "sample_id": sample_id}
+    #     )
+    # else:
+    #     rect_probe = TeacherRectificationProbe(enabled=False)
 
     # Encode prompt once so we can pass embeddings to the probe (offline scoring).
     # We rely on the pipeline to re-encode internally; here we just grab the embeds.
-    _prompt_embeds_for_probe = None
-    if _probe_enabled:
-        with torch.inference_mode():
-            _cond = pipeline.text_encoder(text_prompts=prompts)
-            _prompt_embeds_for_probe = _cond["prompt_embeds"].detach().to("cpu")
+    # _prompt_embeds_for_probe = None
+    # if _probe_enabled:
+    #     with torch.inference_mode():
+    #         _cond = pipeline.text_encoder(text_prompts=prompts)
+    #         _prompt_embeds_for_probe = _cond["prompt_embeds"].detach().to("cpu")
+    for sample_idx in range(args.num_samples):
+        output_path = os.path.join(
+            args.output_folder,
+            f'{prompt}-{sample_idx}.mp4'
+        )
 
-    video, latents = pipeline.inference(
-        noise=sampled_noise,
-        text_prompts=prompts,
-        return_latents=True,
-        initial_latent=initial_latent,
-        report_timing=sample_report_timing,
-        long_video=args.long_video,
-        kv_cache_max_frames=args.kv_cache_max_frames,
-        kv_cache_sink=args.kv_cache_sink,
-        kv_cache_train_frames=args.kv_cache_train_frames,
-        kv_cache_position_mode=args.kv_cache_position_mode,
-        rect_probe=rect_probe,
-        prompt_embeds=_prompt_embeds_for_probe,
-    )
+        if os.path.exists(output_path):
+            print(f'Video {sample_idx} has been generated. Pass!')
+            continue
 
-    if _probe_enabled:
-        rect_probe.finalize()
-    if sample_report_timing:
-        latency = pipeline.first_chunk_time
-        elapsed = pipeline.last_generation_time
-        num_pixel_frames = video.shape[1]
-        fps = num_pixel_frames / elapsed if elapsed > 0 else float('inf')
-        print(f"[Sample {i}] {num_pixel_frames} frames, "
-              f"latency {latency:.2f}s, FPS {fps:.2f}")
-    current_video = rearrange(video, 'b t c h w -> b t h w c').cpu()
-    all_video.append(current_video)
-    num_generated_frames += latents.shape[1]
+        sample_seed = args.seed + idx * args.num_samples + sample_idx
+        set_seed(sample_seed)
 
-    # Final output video
-    clean_latent = latents[0].cpu() 
-    video = 255.0 * torch.cat(all_video, dim=1)
+        sampled_noise = torch.randn(
+            [1, args.num_output_frames, 16, 60, 104],
+            device=device,
+            dtype=torch.bfloat16
+        )
 
-    # Clear VAE cache
-    pipeline.vae.model.clear_cache()
+        video, latents = pipeline.inference(
+            noise=sampled_noise,
+            text_prompts=prompts,
+            return_latents=True,
+            initial_latent=initial_latent,
+            report_timing=sample_report_timing,
+            long_video=args.long_video,
+            kv_cache_max_frames=args.kv_cache_max_frames,
+            kv_cache_sink=args.kv_cache_sink,
+            kv_cache_train_frames=args.kv_cache_train_frames,
+            kv_cache_position_mode=args.kv_cache_position_mode,
+            # rect_probe=rect_probe,
+            # prompt_embeds=_prompt_embeds_for_probe,
+        )
 
-    output_path = os.path.join(args.output_folder, f'{prompt[:100]}.mp4')
-    write_video(output_path, video[0], fps=16)
+        # if _probe_enabled:
+        #     rect_probe.finalize()
+        if sample_report_timing:
+            latency = pipeline.first_chunk_time
+            elapsed = pipeline.last_generation_time
+            num_pixel_frames = video.shape[1]
+            fps = num_pixel_frames / elapsed if elapsed > 0 else float('inf')
+            print(f"[Sample {i}] {num_pixel_frames} frames, "
+                f"latency {latency:.2f}s, FPS {fps:.2f}")
+        current_video = rearrange(video, 'b t c h w -> b t h w c').cpu()
+        all_video.append(current_video)
+        num_generated_frames += latents.shape[1]
 
-       
+        # Final output video
+        clean_latent = latents[0].cpu() 
+        video = 255.0 * torch.cat(all_video, dim=1)
+
+        # Clear VAE cache
+        pipeline.vae.model.clear_cache()
+
+        write_video(output_path, video[0], fps=16)
+        

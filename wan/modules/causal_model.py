@@ -155,7 +155,8 @@ class CausalWanSelfAttention(nn.Module):
         block_mask,
         kv_cache=None,
         current_start=0,
-        cache_start=None
+        cache_start=None,
+        print_verbose=False,
     ):
         r"""
         Args:
@@ -276,6 +277,12 @@ class CausalWanSelfAttention(nn.Module):
             is_rewrite = (len(abs_list) >= cur_frames
                           and abs_list[-cur_frames:] == new_block_abs)
 
+            if print_verbose:
+                print(f"[KV RoPE Relative] sink: {sink}, ",
+                    f"abs_list: {abs_list}, ",
+                    f"new_block_abs: {new_block_abs}, ",
+                    f"is_rewrite: {is_rewrite},")
+            
             if is_rewrite:
                 tail_slot = len(abs_list) - cur_frames
             else:
@@ -294,13 +301,15 @@ class CausalWanSelfAttention(nn.Module):
                     del abs_list[sink:sink + num_evict]
                 abs_list.extend(new_block_abs)
                 tail_slot = len(abs_list) - cur_frames
-
+                if print_verbose:
+                    print(f"[KV RoPE Relative] abs after extend: {abs_list}, ")
             # Write the current block's *un-roped* K/V into its tail slot.
             tail_lo = tail_slot * fs
             tail_hi = tail_lo + cur_frames * fs
             kv_cache["k"][:, tail_lo:tail_hi] = k
             kv_cache["v"][:, tail_lo:tail_hi] = v
-
+            if print_verbose:
+                print(f"[KV RoPE Relative] tail_lo={tail_lo}, tail_hi={tail_hi}")
             num_occ = len(abs_list)
             if self.kv_cache_position_mode == "contiguous":
                 # Compress the retained cache into the training prefix. With
@@ -326,7 +335,8 @@ class CausalWanSelfAttention(nn.Module):
                         torch.arange(sink, device=q.device, dtype=torch.long),
                         torch.arange(Q - (n_win - 1), Q + 1, device=q.device, dtype=torch.long),
                     ])
-
+            if print_verbose:
+                print(f"[KV RoPE Relative] pos: {pos}")
             window_grid = grid_sizes.clone()
             window_grid[:, 0] = num_occ
             roped_key = causal_rope_apply_frames(
@@ -401,6 +411,9 @@ class CausalWanSelfAttention(nn.Module):
             kv_cache["global_end_index"].fill_(current_end)
             kv_cache["local_end_index"].fill_(local_end_index)
 
+            kv_cache["last_write_start_index"] = local_start_index
+            kv_cache["last_write_end_index"]   = local_end_index
+
         # output
         x = x.flatten(2)
         # x.shape is [1, 65520, 1536]
@@ -461,7 +474,8 @@ class CausalWanAttentionBlock(nn.Module):
         kv_cache=None,
         crossattn_cache=None,
         current_start=0,
-        cache_start=None
+        cache_start=None,
+        block_index=None,
     ):
         r"""
         Args:
@@ -481,7 +495,8 @@ class CausalWanAttentionBlock(nn.Module):
         y = self.self_attn(
             (self.norm1(x).unflatten(dim=1, sizes=(num_frames, frame_seqlen)) * (1 + e[1]) + e[0]).flatten(1, 2),
             seq_lens, grid_sizes,
-            freqs, block_mask, kv_cache, current_start, cache_start)
+            freqs, block_mask, kv_cache, current_start, cache_start,
+            False)
 
         # with amp.autocast(dtype=torch.float32):
         x = x + (y.unflatten(dim=1, sizes=(num_frames, frame_seqlen)) * e[2]).flatten(1, 2)
@@ -1034,7 +1049,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                         "kv_cache": kv_cache[block_index],
                         "crossattn_cache": crossattn_cache[block_index],
                         "current_start": current_start,
-                        "cache_start": cache_start
+                        "cache_start": cache_start,
+                        "block_index": block_index,
                     }
                 )
                 x = block(x, **kwargs)

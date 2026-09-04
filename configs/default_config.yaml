@@ -21,9 +21,11 @@ width: 832
 num_frames: 81
 
 teacher_rectification_probe:
-  enabled: true
+  enabled: false
   probe_every_blocks: 4
   window_seconds: 5.0
   teacher_timestep: 500
   probe_seed: 1234
   output_dir: outputs/teacher_rectification
+
+causal_recache: false

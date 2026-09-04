@@ -307,13 +307,15 @@ class CausalInferencePipeline(torch.nn.Module):
             # Step 3.3: rerun with timestep zero to update KV cache using clean context
             context_timestep = torch.ones_like(timestep) * self.args.context_noise
 
-            self.generator(
-                noisy_image_or_video=denoised_pred,
+            self._refresh_kv_cache(
+                block_index=block_index,
+                current_start_frame=current_start_frame,
+                current_num_frames=current_num_frames,
+                denoised_pred=denoised_pred,
+                output=output,
                 conditional_dict=conditional_dict,
-                timestep=context_timestep,
-                kv_cache=self.kv_cache1,
-                crossattn_cache=self.crossattn_cache,
-                current_start=current_start_frame * self.frame_seq_length,
+                context_timestep=context_timestep,
+                final_output=output,
             )
 
             if profile:
@@ -366,6 +368,31 @@ class CausalInferencePipeline(torch.nn.Module):
             return video, output
         else:
             return video
+
+    def _refresh_kv_cache(
+        self,
+        block_index: int,
+        current_start_frame: int,
+        current_num_frames: int,
+        denoised_pred: torch.Tensor,
+        output: torch.Tensor,
+        conditional_dict: dict,
+        context_timestep: torch.Tensor,
+        final_output: torch.Tensor,
+    ):
+        """Single-chunk KV refresh (baseline behavior).
+
+        Subclasses can override this to implement alternative history-refresh
+        strategies (e.g. CausalRecacheInferencePipeline).
+        """
+        self.generator(
+            noisy_image_or_video=denoised_pred,
+            conditional_dict=conditional_dict,
+            timestep=context_timestep,
+            kv_cache=self.kv_cache1,
+            crossattn_cache=self.crossattn_cache,
+            current_start=current_start_frame * self.frame_seq_length,
+        )
 
     def _configure_streaming(
         self,
@@ -426,9 +453,8 @@ class CausalInferencePipeline(torch.nn.Module):
                 "k": torch.zeros([batch_size, kv_cache_size, 12, 128], dtype=dtype, device=device),
                 "v": torch.zeros([batch_size, kv_cache_size, 12, 128], dtype=dtype, device=device),
                 "global_end_index": torch.tensor([0], dtype=torch.long, device=device),
-                "local_end_index": torch.tensor([0], dtype=torch.long, device=device)
+                "local_end_index": torch.tensor([0], dtype=torch.long, device=device),
             })
-
         self.kv_cache1 = kv_cache1  # always store the clean cache
 
     def _initialize_crossattn_cache(self, batch_size, dtype, device):
