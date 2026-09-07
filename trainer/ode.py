@@ -1,7 +1,7 @@
 import gc
 import logging
 from utils.dataset import ODERegressionLMDBDataset, cycle
-from model import ODERegression
+from model import ODERegression, ODERegressionWithRollout
 from collections import defaultdict
 from utils.misc import (
     set_seed
@@ -58,8 +58,10 @@ class Trainer:
         # Step 2: Initialize the model and optimizer
 
         assert config.trainer == "ode", "Only ODE loss is supported for ODE training"
-        self.model = ODERegression(config, device=self.device)
-
+        # self.model = ODERegression(config, device=self.device)
+        model_cls = ODERegressionWithRollout if getattr(config, "rollout_ode", False) else ODERegression
+        self.model = model_cls(config, device=self.device)
+        
         self.model.generator = fsdp_wrap(
             self.model.generator,
             sharding_strategy=config.sharding_strategy,
@@ -94,7 +96,10 @@ class Trainer:
         dataloader = torch.utils.data.DataLoader(
             dataset, batch_size=config.batch_size, sampler=sampler, num_workers=8)
         self.dataloader = cycle(dataloader)
-
+        if self.is_main_process:
+            print(f"[Trainer] Dataset loaded. {len(dataset)} entries in total.")
+            print(f"[Trainer] full config: ")
+            print(config)
         self.step = 0
 
         ##############################################################################################################
@@ -208,7 +213,8 @@ class Trainer:
                 **stats
             }
             wandb.log(wandb_loss_dict, step=self.step)
-
+        if self.is_main_process and self.disable_wandb:
+            print("step: ", self.step, "generator_loss: ", generator_loss.item())
         if self.step % self.config.gc_interval == 0:
             if dist.get_rank() == 0:
                 logging.info("DistGarbageCollector: Running GC.")
@@ -216,7 +222,9 @@ class Trainer:
 
     def train(self):
 
-        while True:
+        # while True:
+        max_steps = int(getattr(self.config, "max_steps", -1))
+        while max_steps < 0 or self.step < max_steps:
             self.train_one_step()
             if (not self.config.no_save) and self.step % self.config.log_iters == 0 and self.step > 0:
                 self.save()

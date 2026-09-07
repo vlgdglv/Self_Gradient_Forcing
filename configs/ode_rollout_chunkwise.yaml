@@ -1,0 +1,110 @@
+trainer: ode
+rollout_ode: true
+ode_data_format: causvid
+config_name: ode_init_with_rollout
+
+# ---------------------------------
+# Raw Wan initialization
+# ---------------------------------
+# intentionally NO generator_ckpt
+
+generator_fsdp_wrap_strategy: size
+text_encoder_fsdp_wrap_strategy: size
+
+generator_task: causal_video
+
+model_kwargs:
+  model_name: Wan2.1-T2V-1.3B
+  timestep_shift: 8.0
+  local_attn_size: 9
+  sink_size: 3
+
+timestep_shift: 8.0
+
+num_frame_per_block: 3
+independent_first_frame: false
+
+# ---------------------------------
+# ODE / rollout
+# ---------------------------------
+denoising_step_list:
+  - 1000
+  - 757
+  - 522
+  - 0
+
+warp_denoising_step: false
+
+context_noise: 0
+
+# ---------------------------------
+# Optimization
+# ---------------------------------
+mixed_precision: true
+gradient_checkpointing: true
+sharding_strategy: hybrid_full
+
+lr: 2.0e-6
+beta1: 0.9
+beta2: 0.999
+weight_decay: 0.01
+
+batch_size: 4
+
+seed: 0
+
+# ---------------------------------
+# Data
+# ---------------------------------
+data_path: dataset/CausVid/mixkit_ode_lmdb
+max_pair: 1500
+load_raw_video: false
+
+# ---------------------------------
+# Logging/checkpoints
+# ---------------------------------
+log_iters: 500
+gc_interval: 20
+
+wandb_host: https://api.wandb.ai
+wandb_key: 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
+wandb_entity: vlgunsdaddy
+wandb_project: VideoAR
+
+
+# ---------------------------------
+# Additional configs
+# ---------------------------------
+# generator_ckpt: checkpoints/init/chunkwise/ar_diffusion.pt
+# real_score_fsdp_wrap_strategy: size
+# fake_score_fsdp_wrap_strategy: size
+# real_name: Wan2.1-T2V-14B
+# fake_name: Wan2.1-T2V-1.3B
+# ts_schedule: false
+# num_train_timestep: 1000
+
+# guidance_scale: 3.0
+# denoising_loss_type: flow
+
+# lr_critic: 4.0e-7
+# beta1_critic: 0.0
+# beta2_critic: 0.999
+
+# ema_weight: 0.99
+# ema_start_step: 200
+
+# total_batch_size: 8
+
+# negative_prompt: '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
+
+# dfake_gen_update_ratio: 5
+# max_steps: 1200
+
+# image_or_video_shape:
+#   - 1
+#   - 21
+#   - 16
+#   - 60
+#   - 104
+
+# distribution_loss: dmd

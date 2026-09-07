@@ -284,7 +284,7 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     for sample_idx in range(args.num_samples):
         output_path = os.path.join(
             args.output_folder,
-            f'{prompt}-{sample_idx}.mp4'
+            f'{prompt[:100]}-{sample_idx}.mp4'
         )
 
         if os.path.exists(output_path):

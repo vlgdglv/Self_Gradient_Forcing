@@ -30,3 +30,5 @@ eval_runs/
 .vscode/
 
 temp_scripts/
+
+training_outputs/
