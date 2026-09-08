@@ -67,7 +67,7 @@ log_iters: 500
 gc_interval: 20
 
 wandb_host: https://api.wandb.ai
-wandb_key: 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
+wandb_key: {not here}
 wandb_entity: vlgunsdaddy
 wandb_project: VideoAR
 
