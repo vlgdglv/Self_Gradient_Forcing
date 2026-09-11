@@ -5,7 +5,7 @@ from .gan import GAN
 from .sid import SiD
 from .ode_regression import ODERegression
 from .naive_consistency import NaiveConsistency
-from .ode_regression_with_rollout import ODERegressionWithRollout
+from .ode_regression_with_rollout import ODERegressionWithRollout, ODERegressionOriginalCausVid
 
 __all__ = [
     "CausalDiffusion",
@@ -15,5 +15,7 @@ __all__ = [
     "SiD",
     "ODERegression",
     "NaiveConsistency",
-    "ODERegressionWithRollout"
+    "ODERegressionWithRollout",
+    "ODERegressionWithWarmup",
+    "ODERegressionOriginalCausVid",
 ]

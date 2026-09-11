@@ -1,7 +1,8 @@
 import gc
 import logging
 from utils.dataset import ODERegressionLMDBDataset, cycle
-from model import ODERegression, ODERegressionWithRollout
+from model import ODERegression, ODERegressionWithRollout, ODERegressionOriginalCausVid
+from model.ode_regression_with_warmup import ODERegressionWithWarmup
 from collections import defaultdict
 from utils.misc import (
     set_seed
@@ -59,7 +60,17 @@ class Trainer:
 
         assert config.trainer == "ode", "Only ODE loss is supported for ODE training"
         # self.model = ODERegression(config, device=self.device)
-        model_cls = ODERegressionWithRollout if getattr(config, "rollout_ode", False) else ODERegression
+        if getattr(config, "rollout_ode", False):
+            if getattr(config, "warmup_rollout_steps", 0) > 0:
+                model_cls = ODERegressionWithWarmup
+            else:
+                model_cls = ODERegressionWithRollout
+        elif getattr(config, "use_causvid_ode", False):
+                model_cls = ODERegressionOriginalCausVid
+        else:
+            model_cls = ODERegression
+        if self.is_main_process:
+            print("[ODETrainer] cls: ", model_cls)
         self.model = model_cls(config, device=self.device)
         
         self.model.generator = fsdp_wrap(
@@ -165,10 +176,17 @@ class Trainer:
                 text_prompts=text_prompts)
 
         # Step 3: Train the generator
-        generator_loss, log_dict = self.model.generator_loss(
-            ode_latent=ode_latent,
-            conditional_dict=conditional_dict
-        )
+        if isinstance(self.model, ODERegressionWithWarmup):
+            generator_loss, log_dict = self.model.generator_loss(
+                ode_latent=ode_latent,
+                conditional_dict=conditional_dict,
+                global_step=self.step,
+            )
+        else:
+            generator_loss, log_dict = self.model.generator_loss(
+                ode_latent=ode_latent,
+                conditional_dict=conditional_dict,
+            )
 
         unnormalized_loss = log_dict["unnormalized_loss"]
         timestep = log_dict["timestep"]
@@ -213,7 +231,7 @@ class Trainer:
                 **stats
             }
             wandb.log(wandb_loss_dict, step=self.step)
-        if self.is_main_process and self.disable_wandb:
+        if self.is_main_process and self.disable_wandb and self.step % 25 == 0:
             print("step: ", self.step, "generator_loss: ", generator_loss.item())
         if self.step % self.config.gc_interval == 0:
             if dist.get_rank() == 0:

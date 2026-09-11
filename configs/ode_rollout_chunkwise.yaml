@@ -2,6 +2,7 @@ trainer: ode
 rollout_ode: true
 ode_data_format: causvid
 config_name: ode_init_with_rollout
+use_causvid_ode: false
 
 # ---------------------------------
 # Raw Wan initialization
@@ -27,6 +28,8 @@ independent_first_frame: false
 # ---------------------------------
 # ODE / rollout
 # ---------------------------------
+warmup_rollout_steps: 1000
+
 denoising_step_list:
   - 1000
   - 757

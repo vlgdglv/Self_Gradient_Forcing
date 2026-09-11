@@ -111,7 +111,7 @@ COMMON_ARGS=(
 
 if (( RUN_GPUS > 1 )); then
     unset RANK WORLD_SIZE MASTER_ADDR MASTER_PORT NODE_RANK LOCAL_WORLD_SIZE GROUP_RANK
-    "$TORCHRUN" --standalone --nnodes=1 --nproc_per_node="$RUN_GPUS" "${COMMON_ARGS[@]}" \
+    "$TORCHRUN" --standalone --nnodes=1 --master_port=28439 --nproc_per_node="$RUN_GPUS" "${COMMON_ARGS[@]}" \
         2>&1 | tee "$OUTPUT_FOLDER/infer.log"
 else
     "$PYTHON_BIN" "${COMMON_ARGS[@]}" 2>&1 | tee "$OUTPUT_FOLDER/infer.log"

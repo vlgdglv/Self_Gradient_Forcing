@@ -65,7 +65,7 @@ torchrun \
   train.py \
   --config_path "$CONFIG" \
   --logdir "$LOGDIR" \
-  --no_visualize  \
+  --no_visualize \
   2>&1 | tee "$LOGDIR/train_shell.log"
 
   # --disable-wandb
