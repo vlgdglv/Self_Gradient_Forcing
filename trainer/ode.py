@@ -1,8 +1,11 @@
 import gc
 import logging
 from utils.dataset import ODERegressionLMDBDataset, cycle
-from model import ODERegression, ODERegressionWithRollout, ODERegressionOriginalCausVid
-from model.ode_regression_with_warmup import ODERegressionWithWarmup
+from model import (
+    ODERegression, ODERegressionWithRollout, ODERegressionOriginalCausVid,
+    ODERegressionWithWarmup, ODERegressionWithForcing,    
+)
+
 from collections import defaultdict
 from utils.misc import (
     set_seed
@@ -66,7 +69,9 @@ class Trainer:
             else:
                 model_cls = ODERegressionWithRollout
         elif getattr(config, "use_causvid_ode", False):
-                model_cls = ODERegressionOriginalCausVid
+            model_cls = ODERegressionOriginalCausVid
+        elif getattr(config, "use_forcing", False):
+            model_cls = ODERegressionWithForcing
         else:
             model_cls = ODERegression
         if self.is_main_process:

@@ -6,6 +6,8 @@ from .sid import SiD
 from .ode_regression import ODERegression
 from .naive_consistency import NaiveConsistency
 from .ode_regression_with_rollout import ODERegressionWithRollout, ODERegressionOriginalCausVid
+from .ode_regression_with_warmup import ODERegressionWithWarmup
+from .ode_regression_with_forcing import ODERegressionWithForcing
 
 __all__ = [
     "CausalDiffusion",
@@ -18,4 +20,5 @@ __all__ = [
     "ODERegressionWithRollout",
     "ODERegressionWithWarmup",
     "ODERegressionOriginalCausVid",
+    "ODERegressionWithForcing",
 ]

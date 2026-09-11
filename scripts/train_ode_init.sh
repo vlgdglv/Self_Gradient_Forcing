@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 cd "$PROJECT_ROOT"
 
-CONFIG="${1:-configs/ode_rollout_chunkwise.yaml}"
-LOGDIR="${2:-training_outputs/rollout_ode_chunkwise}"
+CONFIG="${1:-configs/ode_init_chunkwise.yaml}"
+LOGDIR="${2:-training_outputs/ode_init_chunkwise}"
 NUM_GPUS="${NUM_GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-29531}"
 
@@ -33,7 +33,6 @@ cfg = OmegaConf.merge(
 )
 
 assert cfg.trainer == "ode"
-assert bool(getattr(cfg, "rollout_ode", False))
 assert not getattr(cfg, "generator_ckpt", None), "Remove generator_ckpt: smoke should start from raw Wan."
 assert cfg.model_kwargs.model_name == "Wan2.1-T2V-1.3B"
 assert cfg.num_frame_per_block == 3
@@ -65,7 +64,7 @@ torchrun \
   train.py \
   --config_path "$CONFIG" \
   --logdir "$LOGDIR" \
-  --no_visualize \
+  --no_visualize  \
   2>&1 | tee "$LOGDIR/train_shell.log"
 
   # --disable-wandb

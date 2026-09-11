@@ -1106,6 +1106,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                 if self.independent_first_frame:
                     raise NotImplementedError()
                 else:
+                    # print("x shape: ", x.shape, ", Clean_x shape: ", clean_x.shape)
                     self.block_mask = self._prepare_teacher_forcing_mask(
                         device, num_frames=x.shape[2],
                         frame_seqlen=x.shape[-2] * x.shape[-1] // (self.patch_size[1] * self.patch_size[2]),

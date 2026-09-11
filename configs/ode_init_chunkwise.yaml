@@ -1,8 +1,9 @@
 trainer: ode
-rollout_ode: true
+rollout_ode: false
 ode_data_format: causvid
-config_name: ode_init_with_rollout
+config_name: ode_init_with_forcing
 use_causvid_ode: false
+use_forcing: true
 
 # ---------------------------------
 # Raw Wan initialization
