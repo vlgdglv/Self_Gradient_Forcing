@@ -122,6 +122,9 @@ class ODERegressionWithRollout(ODERegression):
             self.kv_cache_size = (local_attn_size* self.frame_seq_length)
         else:
             self.kv_cache_size = (21 * self.frame_seq_length)
+        
+        self.noise_source = getattr(args, "noise_source", "teacher")
+        assert self.noise_source in ["teacher", "student"], "Wrong noise source. Expected in \"teacher\", \"student\""
 
         if dist.is_available() and dist.is_initialized():
             rank = dist.get_rank()
@@ -130,6 +133,7 @@ class ODERegressionWithRollout(ODERegression):
                 print(f"ODERegressionWithRollout initialized with frame_seq_length: {self.frame_seq_length}")
                 print(f"ODERegressionWithRollout initialized with local_attn_size: {local_attn_size}")
                 print(f"ODERegressionWithRollout initialized with kv_cache_size: {self.kv_cache_size}")
+                print(f"ODERegressionWithRollout initialized with noise_source: {self.noise_source}")
         
     def generator_loss(
         self,
@@ -152,12 +156,20 @@ class ODERegressionWithRollout(ODERegression):
                 conditional_dict=conditional_dict,
             )
         )
+        
+        if self.noise_source == "teacher":
+            input_noise = noisy_at_t.detach()
+            # train_timestep = train_timestep
+        elif self.noise_source == "student":
+            input_noise, train_timestep = self._prepare_generator_input(ode_latent)
+        else:
+            raise NotImplementedError
 
         # ------------------------------------------------
         # Pass 2: parallel rollout-conditioned ODE regression
         # ------------------------------------------------
         _, pred = self.generator(
-            noisy_image_or_video=noisy_at_t.detach(),
+            noisy_image_or_video=input_noise,
             conditional_dict=conditional_dict,
             timestep=train_timestep,
             clean_x=rollout_clean.detach(),
@@ -329,3 +341,56 @@ class ODERegressionWithRollout(ODERegression):
                 "is_init": False,
             })
         self.crossattn_cache = crossattn_cache
+
+    def _process_timestep(self, timestep):
+        """
+        Pre-process the randomly generated timestep based on the generator's task type.
+        Input:
+            - timestep: [batch_size, num_frame] tensor containing the randomly generated timestep.
+
+        Output Behavior:
+            - image: check that the second dimension (num_frame) is 1.
+            - bidirectional_video: broadcast the timestep to be the same for all frames.
+            - causal_video: broadcast the timestep to be the same for all frames **in a block**.
+        """
+        if self.args.generator_task == "image":
+            assert timestep.shape[1] == 1
+            return timestep
+        elif self.args.generator_task == "bidirectional_video":
+            for index in range(timestep.shape[0]):
+                timestep[index] = timestep[index, 0]
+            return timestep
+        elif self.args.generator_task == "causal_video":
+            # make the noise level the same within every motion block
+            timestep = timestep.reshape(timestep.shape[0], -1, self.num_frame_per_block)
+            timestep[:, :, 1:] = timestep[:, :, 0:1]
+            timestep = timestep.reshape(timestep.shape[0], -1)
+            return timestep
+        else:
+            raise NotImplementedError()
+
+    @torch.no_grad()
+    def _prepare_generator_input(self, ode_latent: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Given a tensor containing the whole ODE sampling trajectories,
+        randomly choose an intermediate timestep and return the latent as well as the corresponding timestep.
+        Input:
+            - ode_latent: a tensor containing the whole ODE sampling trajectories [batch_size, num_denoising_steps, num_frames, num_channels, height, width].
+        Output:
+            - noisy_input: a tensor containing the selected latent [batch_size, num_frames, num_channels, height, width].
+            - timestep: a tensor containing the corresponding timestep [batch_size].
+        """
+        batch_size, num_denoising_steps, num_frames, num_channels, height, width = ode_latent.shape
+
+        # Step 1: Randomly choose a timestep for each frame except 0
+        index = torch.randint(0, len(self.denoising_step_list)-1, [batch_size, num_frames], device=self.device, dtype=torch.long)
+
+        index = self._process_timestep(index)
+
+        noisy_input = torch.gather(
+            ode_latent, dim=1,
+            index=index.reshape(batch_size, 1, num_frames, 1, 1, 1).expand(-1, -1, -1, num_channels, height, width)
+        ).squeeze(1)
+
+        timestep = self.denoising_step_list[index]
+        return noisy_input, timestep
