@@ -157,10 +157,10 @@ class ODERegressionWithRollout(ODERegression):
             )
         )
         
-        if self.noise_source == "teacher":
+        if self.noise_source == "student":
             input_noise = noisy_at_t.detach()
             # train_timestep = train_timestep
-        elif self.noise_source == "student":
+        elif self.noise_source == "teacher":
             input_noise, train_timestep = self._prepare_generator_input(ode_latent)
         else:
             raise NotImplementedError

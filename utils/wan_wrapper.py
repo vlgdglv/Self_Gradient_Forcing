@@ -230,7 +230,8 @@ class WanDiffusionWrapper(torch.nn.Module):
         clean_x: Optional[torch.Tensor] = None, # TF
         aug_t: Optional[torch.Tensor] = None, # for TF clean GT, if it's also noisy and needs denoising by the model, aug_t is its timestep
         
-        cache_start: Optional[int] = None
+        cache_start: Optional[int] = None,
+        return_x0=True,
     ) -> torch.Tensor:
         prompt_embeds = conditional_dict["prompt_embeds"]
 
@@ -282,6 +283,9 @@ class WanDiffusionWrapper(torch.nn.Module):
                         t=input_timestep, context=prompt_embeds,
                         seq_len=self.seq_len
                     ).permute(0, 2, 1, 3, 4)
+        
+        if not return_x0:
+            return flow_pred
 
         pred_x0 = self._convert_flow_pred_to_x0(
             flow_pred=flow_pred.flatten(0, 1),
