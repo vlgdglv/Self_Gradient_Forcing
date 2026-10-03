@@ -7,7 +7,7 @@ from .ode_regression import ODERegression
 from .naive_consistency import NaiveConsistency
 from .ode_regression_with_rollout import ODERegressionWithRollout, ODERegressionOriginalCausVid
 from .ode_regression_with_warmup import ODERegressionWithWarmup
-from .ode_regression_with_forcing import ODERegressionWithForcing
+from .ode_regression_with_forcing import ODERegressionWithForcing, ODERegressionWithHistoryInit
 
 __all__ = [
     "CausalDiffusion",
@@ -21,4 +21,5 @@ __all__ = [
     "ODERegressionWithWarmup",
     "ODERegressionOriginalCausVid",
     "ODERegressionWithForcing",
+    "ODERegressionWithHistoryInit",
 ]

@@ -5,8 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 cd "$PROJECT_ROOT"
 
-CONFIG="${1:-configs/ode_init_chunkwise.yaml}"
-LOGDIR="${2:-training_outputs/ode_init_chunkwise}"
+CONFIG="${1:-configs/ode_init_chunkwise_history_init.yaml}"
+LOGDIR="${2:-training_outputs/ode_init_chunkwise_history_init}"
 NUM_GPUS="${NUM_GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-29531}"
 
@@ -36,7 +36,7 @@ torchrun \
   train.py \
   --config_path "$CONFIG" \
   --logdir "$LOGDIR" \
-  --no_visualize --disable-wandb \
+  --no_visualize  --disable-wandb \
   2>&1 | tee "$LOGDIR/train_shell.log"
 
-  # ---disable-wandb
+  # --disable-wandb

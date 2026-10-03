@@ -3,7 +3,8 @@ rollout_ode: false
 ode_data_format: causvid
 config_name: ode_init_with_forcing
 use_causvid_ode: false
-use_forcing: true
+use_forcing: false
+use_history_init: true
 
 # ---------------------------------
 # Raw Wan initialization
@@ -25,6 +26,14 @@ timestep_shift: 5.0
 
 num_frame_per_block: 3
 independent_first_frame: false
+
+# ---------------------------------
+# history init noise
+# ---------------------------------
+warm_start_gamma: 0.9375
+warm_start_p1000: 0.5
+self.warm_history_mode: prev_block_copy
+
 
 # ---------------------------------
 # ODE / rollout
@@ -61,7 +70,7 @@ seed: 0
 # Data
 # ---------------------------------
 data_path: dataset/vidprom_sample_16k
-max_pair: 16000
+max_pair: 1000000
 load_raw_video: false
 data_store_ext: pt
 

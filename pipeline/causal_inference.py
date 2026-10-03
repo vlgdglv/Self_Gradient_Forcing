@@ -62,6 +62,8 @@ class CausalInferencePipeline(torch.nn.Module):
         if self.num_frame_per_block > 1:
             self.generator.model.num_frame_per_block = self.num_frame_per_block
 
+        self.warm_start_gamma = getattr(args, "warm_start_gamma", 0.9375)
+
     def inference(
         self,
         noise: torch.Tensor,
@@ -229,6 +231,7 @@ class CausalInferencePipeline(torch.nn.Module):
         all_num_frames = [self.num_frame_per_block] * num_blocks
         if self.independent_first_frame and initial_latent is None:
             all_num_frames = [1] + all_num_frames
+        prev_num_frames = 0
         for block_index, current_num_frames in enumerate(tqdm.tqdm(all_num_frames)):
             # Optional: time the first block (TTFC). Excludes the KV-cache
             # refresh pass that follows the main denoising.
@@ -241,7 +244,12 @@ class CausalInferencePipeline(torch.nn.Module):
 
             noisy_input = noise[
                 :, current_start_frame - num_input_frames:current_start_frame + current_num_frames - num_input_frames]
-
+            
+            # if block_index > 0:
+            #     gamma = self.warm_start_gamma
+            #     history_prior = output[:, current_start_frame-prev_num_frames:current_start_frame].detach().clone()
+            #     noisy_input = gamma * noisy_input + (1.0 - gamma) * history_prior
+            
             # Select denoising schedule: block 0 may use a dedicated schedule
             # when provided by the config; otherwise all blocks share the same list.
             current_denoising_list = (
@@ -326,6 +334,7 @@ class CausalInferencePipeline(torch.nn.Module):
 
             # Step 3.4: update the start and end frame indices
             current_start_frame += current_num_frames
+            prev_num_frames = current_num_frames
 
         if profile:
             # End diffusion timing and synchronize CUDA

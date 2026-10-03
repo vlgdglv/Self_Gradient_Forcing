@@ -1,9 +1,11 @@
 from utils.wan_wrapper import WanDiffusionWrapper, WanTextEncoder, WanVAEWrapper
 from utils.scheduler import FlowMatchScheduler
+from utils.dataset import ODERegressionPTDataset
 from utils.distributed import launch_distributed_job
 from torch.utils.data import Dataset
 import torch.distributed as dist
 from tqdm import tqdm
+from pathlib import Path
 import argparse
 import torch
 import math
@@ -72,6 +74,27 @@ def init_model(device, timestep_shift=5.0, num_inference_steps=48):
 
     return model, encoder, scheduler, unconditional_dict
 
+
+
+def load_states(path) -> torch.Tensor:
+    data = torch.load(path, map_location="cpu")
+    states = data["states"]
+    return states  # [S, T, C, H, W]
+
+def check_trajectories(data_path="dataset/vidprom_sample_16k"):
+    data_dir = Path(data_path)
+    files = sorted(data_dir.glob("*.pt"))
+
+    if not files:
+        raise FileNotFoundError(f"No .pt/.pth files found under {data_dir}")
+
+    print(f"Found {len(files)} files.")
+
+    for path in tqdm(files, desc="processing trajectories"):
+        try:
+            load_states(path)
+        except Exception as e:
+            print(f"[WARN] failed on {path}: {e}")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -211,4 +234,5 @@ def main():
 
 if __name__ == "__main__":
     # sample_subset()
-    main()
+    # main()
+    check_trajectories()

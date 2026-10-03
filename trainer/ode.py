@@ -1,9 +1,9 @@
 import gc
 import logging
-from utils.dataset import ODERegressionLMDBDataset, cycle
+from utils.dataset import ODERegressionLMDBDataset, cycle, ODERegressionPTDataset
 from model import (
     ODERegression, ODERegressionWithRollout, ODERegressionOriginalCausVid,
-    ODERegressionWithWarmup, ODERegressionWithForcing,    
+    ODERegressionWithWarmup, ODERegressionWithForcing, ODERegressionWithHistoryInit  
 )
 
 from collections import defaultdict
@@ -72,8 +72,11 @@ class Trainer:
             model_cls = ODERegressionOriginalCausVid
         elif getattr(config, "use_forcing", False):
             model_cls = ODERegressionWithForcing
+        elif getattr(config, "use_history_init", False):
+            model_cls = ODERegressionWithHistoryInit
         else:
             model_cls = ODERegression
+            
         if self.is_main_process:
             print("[ODETrainer] cls: ", model_cls)
         self.model = model_cls(config, device=self.device)
@@ -105,8 +108,15 @@ class Trainer:
         )
 
         # Step 3: Initialize the dataloader
-        dataset = ODERegressionLMDBDataset(
-            config.data_path, max_pair=getattr(config, "max_pair", int(1e8)))
+        data_store_ext = getattr(config, "data_store_ext", "lmdb")
+        if data_store_ext == "lmdb":
+            data_cls = ODERegressionLMDBDataset
+        elif data_store_ext == "pt":
+            data_cls = ODERegressionPTDataset
+        else:
+            data_cls = ODERegressionLMDBDataset
+        dataset = data_cls(config.data_path, max_pair=getattr(config, "max_pair", int(1e8)))
+        
         sampler = torch.utils.data.distributed.DistributedSampler(
             dataset, shuffle=True, drop_last=True)
         dataloader = torch.utils.data.DataLoader(
