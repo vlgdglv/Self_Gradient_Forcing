@@ -8,6 +8,7 @@ from .naive_consistency import NaiveConsistency
 from .ode_regression_with_rollout import ODERegressionWithRollout, ODERegressionOriginalCausVid
 from .ode_regression_with_warmup import ODERegressionWithWarmup
 from .ode_regression_with_forcing import ODERegressionWithForcing, ODERegressionWithHistoryInit
+from .teacher_forcing_dmd import TeacherForcingDMD
 
 __all__ = [
     "CausalDiffusion",
@@ -22,4 +23,5 @@ __all__ = [
     "ODERegressionOriginalCausVid",
     "ODERegressionWithForcing",
     "ODERegressionWithHistoryInit",
+    "TeacherForcingDMD",
 ]

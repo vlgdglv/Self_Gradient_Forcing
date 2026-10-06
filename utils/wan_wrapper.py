@@ -232,6 +232,7 @@ class WanDiffusionWrapper(torch.nn.Module):
         
         cache_start: Optional[int] = None,
         return_x0=True,
+        update_kv_cache=True,
     ) -> torch.Tensor:
         prompt_embeds = conditional_dict["prompt_embeds"]
 
@@ -251,7 +252,8 @@ class WanDiffusionWrapper(torch.nn.Module):
                 kv_cache=kv_cache,
                 crossattn_cache=crossattn_cache,
                 current_start=current_start,
-                cache_start=cache_start
+                cache_start=cache_start,
+                update_kv_cache=update_kv_cache,
             ).permute(0, 2, 1, 3, 4)
         else:
             if clean_x is not None:

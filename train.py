@@ -3,7 +3,10 @@ import os
 from omegaconf import OmegaConf
 import wandb
 
-from trainer import DiffusionTrainer, ODETrainer, ScoreDistillationTrainer, ConsistencyDistillationTrainer
+from trainer import (
+    DiffusionTrainer, ODETrainer, ScoreDistillationTrainer, 
+    ConsistencyDistillationTrainer, TeacherForcingDMDTrainer
+)
 
 
 def main():
@@ -48,6 +51,8 @@ def main():
         trainer = ScoreDistillationTrainer(config)
     elif config.trainer == "consistency_distillation":
         trainer = ConsistencyDistillationTrainer(config)
+    elif config.trainer == "teacher_forcing_dmd":
+        trainer = TeacherForcingDMDTrainer(config)
     trainer.train()
 
     wandb.finish()
