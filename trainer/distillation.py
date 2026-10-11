@@ -6,7 +6,7 @@ from utils.distributed import EMA_FSDP, fsdp_wrap, fsdp_state_dict, launch_distr
 from utils.misc import set_seed
 import torch.distributed as dist
 from omegaconf import OmegaConf
-from model import DMD
+from model import DMD, DMD_SF
 import torch
 import wandb
 import time
@@ -41,7 +41,7 @@ class Trainer:
         set_seed(config.seed + global_rank)
 
         if self.is_main_process and not self.disable_wandb:
-            wandb.login(host=config.wandb_host, key=config.wandb_key)
+            wandb.login(host=config.wandb_host)
             wandb.init(
                 config=OmegaConf.to_container(config, resolve=True),
                 name=config.config_name,
@@ -55,7 +55,15 @@ class Trainer:
 
         # Step 2: Initialize the model and optimizer
         if config.distribution_loss == "dmd":
-            self.model = DMD(config, device=self.device)
+            forcing_type = getattr(config, "forcing_type", "self_gradient_forcing")
+            if forcing_type == "self_gradient_forcing":
+                print("Using self GRADIENT forcing.")
+                self.model = DMD(config, device=self.device)
+            elif forcing_type == "self_forcing":
+                print("Using self forcing.")
+                self.model = DMD_SF(config, device=self.device)
+            else:
+                raise ValueError("Invalid forcing type")
         else:
             raise ValueError("Invalid distribution matching loss")
 

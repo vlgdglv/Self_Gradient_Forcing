@@ -29,8 +29,8 @@ class TeacherForcingDMD(nn.Module):
 
         self.real_model_name = getattr(args, "real_name", "Wan2.1-T2V-1.3B")
         self.real_score = WanDiffusionWrapper(model_name=self.real_model_name, timestep_shift=self.timestep_shift, is_causal=False)
-        self.real_score.model.requires_grad_(False)
-        self.real_score.to(device=self.device, dtype=self.dtype)
+        self.real_score.model.requires_grad_(True)
+        # self.real_score.to(device=self.device, dtype=self.dtype)
         
         self.text_encoder = WanTextEncoder()
         self.text_encoder.requires_grad_(False)
@@ -78,6 +78,7 @@ class TeacherForcingDMD(nn.Module):
         if args.gradient_checkpointing:
             self.generator.enable_gradient_checkpointing()
             self.fake_score.enable_gradient_checkpointing()
+            self.real_score.enable_gradient_checkpointing()
 
         self.real_guidance_scale = getattr(args, "guidance_scale", 5.0)
         self.ts_schedule = getattr(args, "ts_schedule", True)
@@ -92,7 +93,97 @@ class TeacherForcingDMD(nn.Module):
     def log(self, msg):
         print(f"[TFDMD] {msg}")
 
-    def critic_loss(
+    def real_critic_loss(
+        self,
+        ode_latent: torch.Tensor,
+        conditional_dict: dict,
+        global_step
+    ):
+        # [B, T, C, H, W]
+        clean_latent = ode_latent[:, -1]
+        batch_size = clean_latent.shape[0]
+
+        # --------------------------------------------------
+        # 1. Sample one AR chunk
+        # --------------------------------------------------
+        total_chunks = (clean_latent.shape[1] // self.num_frame_per_block)
+
+        # if dist.get_rank() == 0:
+        #     chunk_idx = torch.randint(0, total_chunks, (1,), device=self.device)
+        # else:
+        #     chunk_idx = torch.zeros(1, dtype=torch.long, device=self.device)
+
+        # dist.broadcast(chunk_idx, src=0)
+        # chunk_idx = int(chunk_idx.item())
+        
+        chunk_idx = (global_step % total_chunks)
+        
+        ctx_end = chunk_idx * self.num_frame_per_block
+        x_ctx = clean_latent[:, :ctx_end]
+        current_gt = clean_latent[:, ctx_end:ctx_end + self.num_frame_per_block]
+
+        # --------------------------------------------------
+        # 2. Generate real current chunk
+        # --------------------------------------------------
+        prefix_real = torch.cat([x_ctx, current_gt], dim=1)
+        prefix_frames = prefix_real.shape[1]
+
+        # --------------------------------------------------
+        # 3. Sample critic timestep
+        # --------------------------------------------------
+        tau = torch.randint(0, 1000, (batch_size, 1), device=self.device).float()
+        u = tau / 1000.0
+        tau = self.timestep_shift * u / (1.0 + (self.timestep_shift - 1.0) * u) * 1000.0
+        tau = tau.clamp(20.0, 980.0)
+        critic_timestep = tau.repeat(1, prefix_frames)
+
+        # --------------------------------------------------
+        # 4. Add noise to the whole prefix
+        # --------------------------------------------------
+        critic_noise = torch.randn_like(prefix_real, dtype=self.dtype, device=self.device)
+
+        prefix_tau = self.scheduler.add_noise(
+            prefix_real.flatten(0, 1),
+            critic_noise.flatten(0, 1),
+            critic_timestep.flatten(0, 1),
+        ).unflatten(0, prefix_real.shape[:2])
+
+        # --------------------------------------------------
+        # 5. Bidirectional fake critic
+        # --------------------------------------------------
+        _, pred_real_prefix = self.real_score(
+            noisy_image_or_video=prefix_tau,
+            conditional_dict=conditional_dict,
+            timestep=critic_timestep,
+        )
+
+        # --------------------------------------------------
+        # 6. x0 prediction -> flow prediction
+        # --------------------------------------------------
+        flow_pred = WanDiffusionWrapper._convert_x0_to_flow_pred(
+                scheduler=self.scheduler,
+                x0_pred=pred_real_prefix.flatten(0, 1),
+                xt=prefix_tau.flatten(0, 1),
+                timestep=critic_timestep.flatten(0, 1),
+            ).unflatten(0, prefix_real.shape[:2])
+        
+
+        # Wan flow-matching target: v* = eps - x0
+        flow_target = critic_noise - prefix_real
+
+        # --------------------------------------------------
+        # 7. ONLY optimize generated leaf
+        # --------------------------------------------------
+        leaf = slice(-self.num_frame_per_block, None)
+        loss = F.mse_loss(flow_pred[:, leaf].float(), flow_target[:, leaf].float())
+
+        log_dict = {
+            "real_critic_loss": loss.detach().item(),
+            "real_critic_timestep": critic_timestep.detach()
+        }
+        return loss, log_dict
+
+    def fake_critic_loss(
         self,
         ode_latent: torch.Tensor,
         conditional_dict: dict,
@@ -188,11 +279,11 @@ class TeacherForcingDMD(nn.Module):
         loss = F.mse_loss(flow_pred[:, leaf].float(), flow_target[:, leaf].float())
 
         log_dict = {
-            "critic_loss": loss.detach().item(),
-            "critic_timestep": critic_timestep.detach()
+            "fake_critic_loss": loss.detach().item(),
+            "fake_critic_timestep": critic_timestep.detach()
         }
         return loss, log_dict
-
+        
     def generator_loss(
         self,
         ode_latent: torch.Tensor,
@@ -216,11 +307,11 @@ class TeacherForcingDMD(nn.Module):
         total_chunks = (clean_latent.shape[1] // self.num_frame_per_block)
         chunk_idx = (global_step % total_chunks)
         
-        ctx_end = chunk_idx * 3
+        ctx_end = chunk_idx * self.num_frame_per_block
         x_ctx = clean_latent[:, :ctx_end]
 
         # 2. teacher-forced causal generation with deployment context tau=0
-        eps_gen = torch.randn_like(clean_latent[:, ctx_end:ctx_end+3])
+        eps_gen = torch.randn_like(clean_latent[:, ctx_end:ctx_end + self.num_frame_per_block])
 
         x_fake = self.four_step_generate_with_grad(
             initial_noise=eps_gen,
@@ -247,20 +338,14 @@ class TeacherForcingDMD(nn.Module):
 
         with torch.no_grad():
             # 4. bidirectional Real score
-            _, pred_real_cond_prefix = self.real_score(
+            _, pred_real_prefix = self.real_score(
                 noisy_image_or_video=prefix_tau,
                 conditional_dict=conditional_dict,
                 timestep=score_timestep,
             )
-            _, pred_real_uncond_prefix = self.real_score(
-                noisy_image_or_video=prefix_tau,
-                conditional_dict=unconditional_dict,
-                timestep=score_timestep,
-            )
-
-            pred_real_prefix = pred_real_cond_prefix + self.real_guidance_scale * (pred_real_cond_prefix - pred_real_uncond_prefix)
-            pred_real = pred_real_prefix[:, -self.num_frame_per_block:]
             
+            pred_real = pred_real_prefix[:, -self.num_frame_per_block:]
+
             # --------------------------------------------------
             # 5. causal SELF fake-score
             # --------------------------------------------------

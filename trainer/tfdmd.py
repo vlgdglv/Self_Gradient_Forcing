@@ -47,7 +47,7 @@ class Trainer:
             wandb.login(host=config.wandb_host)
             wandb.init(
                 config=OmegaConf.to_container(config, resolve=True),
-                name=config.config_name,
+                name=config.wandb_run_name,
                 mode="online",
                 entity=config.wandb_entity,
                 project=config.wandb_project,
@@ -105,8 +105,15 @@ class Trainer:
             betas=(config.beta1, config.beta2),
             weight_decay=config.weight_decay
         )
-        self.critic_optimizer = torch.optim.AdamW(
+        self.fake_critic_optimizer = torch.optim.AdamW(
             [param for param in self.model.fake_score.parameters()
+             if param.requires_grad],
+            lr=config.lr_critic if hasattr(config, "lr_critic") else config.lr,
+            betas=(config.beta1_critic, config.beta2_critic),
+            weight_decay=config.weight_decay
+        )
+        self.real_critic_optimizer = torch.optim.AdamW(
+            [param for param in self.model.real_score.parameters()
              if param.requires_grad],
             lr=config.lr_critic if hasattr(config, "lr_critic") else config.lr,
             betas=(config.beta1_critic, config.beta2_critic),
@@ -133,6 +140,7 @@ class Trainer:
             print(f"[Trainer] full config: ")
             print(config)
         self.step = 0
+        self.critic_warmup_step = getattr(config, "critic_warmup_step", 100)
 
         ##############################################################################################################
         # 7. (If resuming) Load the model and optimizer, lr_scheduler, ema's statedicts
@@ -213,7 +221,9 @@ class Trainer:
             "model.pt and critic_model.pt"))
 
     def train_one_step_generator(self, ode_latent, conditional_dict, loss_scale=1.0):
-        self.model.eval()  # prevent any randomness (e.g. dropout)
+        self.model.generator.train()
+        self.model.real_score.eval()
+        self.model.fake_score.eval()
         self.generator_optimizer.zero_grad(set_to_none=True)
 
         # Train the generator
@@ -243,10 +253,49 @@ class Trainer:
             else:
                 pass
 
-    def train_one_step_critic(self, ode_latent, conditional_dict, loss_scale=1.0):
-        self.critic_optimizer.zero_grad(set_to_none=True)
+    def train_one_step_real_critic(self, ode_latent, conditional_dict, loss_scale=1.0):
+        self.model.real_score.train()
+        self.model.generator.eval()
+        self.model.fake_score.eval()
+        self.real_critic_optimizer.zero_grad(set_to_none=True)
 
-        critic_loss, critic_log_dict = self.model.critic_loss(
+        critic_loss, critic_log_dict = self.model.real_critic_loss(
+            ode_latent, 
+            conditional_dict,
+            global_step=self.step
+        )
+
+        (critic_loss * loss_scale).backward()
+        critic_grad_norm = self.model.real_score.clip_grad_norm_(self.max_grad_norm)
+        self.real_critic_optimizer.step()
+
+        critic_log_dict.update({
+            "real_critic_loss": critic_loss,
+            "real_critic_grad_norm": critic_grad_norm
+        })
+
+        # Logging
+        if self.is_main_process:
+            if not self.disable_wandb:
+                wandb_loss_dict = {
+                    "real_critic_loss": critic_loss.item(),
+                    "real_critic_grad_norm": critic_grad_norm.item(),
+                }
+                wandb.log(wandb_loss_dict, step=self.step)
+                if self.step % 25 == 0:
+                    print("Step: ", self.step, ", real_critic_loss: ", critic_loss.item(), "real_critic_grad_norm: ", critic_grad_norm.item())
+            elif self.step % self.config.console_print_interval == 0:
+                print("Step: ", self.step, ", real_critic_loss: ", critic_loss.item(), "real_critic_grad_norm: ", critic_grad_norm.item())
+            else:
+                pass
+
+    def train_one_step_fake_critic(self, ode_latent, conditional_dict, loss_scale=1.0):
+        self.model.fake_score.train()
+        self.model.generator.eval()
+        self.model.real_score.eval()
+        self.fake_critic_optimizer.zero_grad(set_to_none=True)
+
+        critic_loss, critic_log_dict = self.model.fake_critic_loss(
             ode_latent, 
             conditional_dict,
             global_step=self.step
@@ -254,30 +303,29 @@ class Trainer:
 
         (critic_loss * loss_scale).backward()
         critic_grad_norm = self.model.fake_score.clip_grad_norm_(self.max_grad_norm)
-        self.critic_optimizer.step()
+        self.fake_critic_optimizer.step()
 
         critic_log_dict.update({
-            "critic_loss": critic_loss,
-            "critic_grad_norm": critic_grad_norm
+            "fake_critic_loss": critic_loss,
+            "fake_critic_grad_norm": critic_grad_norm
         })
 
         # Logging
         if self.is_main_process:
             if not self.disable_wandb:
                 wandb_loss_dict = {
-                    "critic_loss": critic_loss.item(),
-                    "critic_grad_norm": critic_grad_norm.item(),
+                    "fake_critic_loss": critic_loss.item(),
+                    "fake_critic_grad_norm": critic_grad_norm.item(),
                 }
                 wandb.log(wandb_loss_dict, step=self.step)
                 if self.step % 25 == 0:
-                    print("Step: ", self.step, ", critic_loss: ", critic_loss.item(), "critic_grad_norm: ", critic_grad_norm.item())
+                    print("Step: ", self.step, ", fake_critic_loss: ", critic_loss.item(), "fake_critic_grad_norm: ", critic_grad_norm.item())
             elif self.step % self.config.console_print_interval == 0:
-                print("Step: ", self.step, ", critic_loss: ", critic_loss.item(), "critic_grad_norm: ", critic_grad_norm.item())
+                print("Step: ", self.step, ", fake_critic_loss: ", critic_loss.item(), "fake_critic_grad_norm: ", critic_grad_norm.item())
             else:
                 pass
 
     def train(self):
-        
         max_steps = int(getattr(self.config, "max_steps", -1))
         batch_size = int(getattr(self.config, "batch_size", 1))
         if self.is_main_process:
@@ -289,8 +337,10 @@ class Trainer:
             )
             
         while max_steps < 0 or self.step < max_steps:
-            do_train_generator = self.step > 0 and self.step % self.config.dfake_gen_update_ratio == 0
-            do_train_critic = True
+            critic_warmup = self.step < self.critic_warmup_step
+            do_train_generator = not critic_warmup and self.step > 0 and self.step % self.config.dfake_gen_update_ratio == 0
+            do_train_real_critic = critic_warmup or self.step > 0 and self.step % self.config.dreal_gen_update_ratio == 0
+            do_train_fake_critic = True
             
             # Get the next batch of text prompts
             batch = next(self.dataloader)
@@ -301,16 +351,19 @@ class Trainer:
             with torch.no_grad():
                 conditional_dict = self.model.text_encoder(text_prompts=text_prompts)
             
+            if do_train_real_critic:
+                self.train_one_step_real_critic(ode_latent, conditional_dict)
+
+            if do_train_fake_critic:
+                self.train_one_step_fake_critic(ode_latent, conditional_dict)
+
             # Train the generator
             if do_train_generator:
                 self.train_one_step_generator(ode_latent, conditional_dict)
 
                 if self.generator_ema is not None:
                     self.generator_ema.update(self.model.generator)
-
-            if do_train_critic:
-                # Train the critic
-                self.train_one_step_critic(ode_latent, conditional_dict)
+            
 
             if (not self.config.no_save) and self.step % self.config.log_iters == 0 and self.step > 0:
                 self.save()

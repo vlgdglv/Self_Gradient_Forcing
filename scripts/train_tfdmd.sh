@@ -6,7 +6,7 @@ PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 cd "$PROJECT_ROOT"
 
 CONFIG="${1:-configs/teacher_forcing_dmd_chunkwise.yaml}"
-LOGDIR="${2:-training_outputs/teacher_forcing_dmd_chunkwise}"
+LOGDIR="${2:-training_outputs/teacher_forcing_dmd_chunkwise_trainable_real_nowarmup}"
 NUM_GPUS="${NUM_GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-29531}"
 
@@ -36,7 +36,7 @@ torchrun \
   train.py \
   --config_path "$CONFIG" \
   --logdir "$LOGDIR" \
-  --no_visualize  \
+  --no_visualize --disable-wandb \
   2>&1 | tee "$LOGDIR/train_shell.log"
 
-  # --disable-wandb
+  # 

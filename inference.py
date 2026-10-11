@@ -22,7 +22,7 @@ except ImportError:
         imageio.mimwrite(filename, list(video), fps=fps, codec="libx264", quality=quality)
 from einops import rearrange
 import torch.distributed as dist
-from torch.utils.data import DataLoader, SequentialSampler
+from torch.utils.data import DataLoader, SequentialSampler, Subset
 from torch.utils.data.distributed import DistributedSampler
 import json
 
@@ -41,7 +41,9 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--config_path", type=str, help="Path to the config file")
 parser.add_argument("--checkpoint_path", type=str, help="Path to the checkpoint folder")
 parser.add_argument("--data_path", type=str, help="Path to the dataset")
+parser.add_argument("--extended_prompt_path", type=str, default=None)
 parser.add_argument("--output_folder", type=str, help="Output folder")
+parser.add_argument("--name_length", type=int, default=100, help="Output folder")
 parser.add_argument("--num_output_frames", type=int, default=21, help="Number of overlap frames between sliding windows")
 parser.add_argument("--use_ema", action="store_true", help="Whether to use EMA parameters")
 parser.add_argument("--seed", type=int, default=42, help="Random seed")
@@ -108,14 +110,14 @@ if args.checkpoint_path:
     gen_sd = state_dict[key]
 
     try:
-        pipeline.generator.load_state_dict(gen_sd)
+        pipeline.generator.load_state_dict(gen_sd, strict=True)
     except RuntimeError:
         fixed = {}
         for k, v in gen_sd.items():
             if k.startswith("model._fsdp_wrapped_module."):
                 k = k.replace("model._fsdp_wrapped_module.", "model.", 1)
             fixed[k] = v
-        pipeline.generator.load_state_dict(fixed, strict=False)
+        pipeline.generator.load_state_dict(fixed, strict=True)
 
 pipeline = pipeline.to(dtype=torch.bfloat16)
 if low_memory:
@@ -136,7 +138,7 @@ if args.i2v:
     ])
     dataset = TextImagePairDataset(args.data_path, transform=transform)
 else:
-    dataset = TextDataset(prompt_path=args.data_path)
+    dataset = TextDataset(prompt_path=args.data_path, extended_prompt_path=args.extended_prompt_path)
 num_prompts = len(dataset)
 print(f"Number of prompts: {num_prompts}")
 
@@ -145,11 +147,20 @@ if args.report_timing and num_prompts < 2:
           f"(got {num_prompts}); timing disabled.")
     args.report_timing = False
 
+# if dist.is_initialized():
+#     sampler = DistributedSampler(dataset, shuffle=False, drop_last=False)
+# else:
+#     sampler = SequentialSampler(dataset)
+
 if dist.is_initialized():
-    sampler = DistributedSampler(dataset, shuffle=False, drop_last=False)
-else:
-    sampler = SequentialSampler(dataset)
-dataloader = DataLoader(dataset, batch_size=1, sampler=sampler, num_workers=0, drop_last=False)
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+
+    indices = list(range(rank, len(dataset), world_size))
+    dataset = Subset(dataset, indices)
+
+
+dataloader = DataLoader(dataset, batch_size=1, num_workers=0, drop_last=False)
 
 # Create output directory (only on main process to avoid race conditions)
 if local_rank == 0:
@@ -243,10 +254,7 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     else:
         # For text-to-video, batch is just the text prompt
         prompt = batch['prompts'][0]
-        # output_path = os.path.join(args.output_folder, f'{prompt[:100]}.mp4')
-        # if os.path.exists(output_path):
-        #     print('Video has been generated. Pass!')
-        #     continue
+  
         extended_prompt = batch['extended_prompts'][0] if 'extended_prompts' in batch else None
         if extended_prompt is not None:
             prompts = [extended_prompt] 
@@ -254,44 +262,19 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
             prompts = [prompt] 
 
         initial_latent = None
-        # Per-prompt seed offset: each prompt gets its OWN reproducible noise
-        # (seed + global prompt index), independent of GPU count / sharding /
-        # skips. Change --seed to sweep a different noise set across all prompts.
-        # set_seed(args.seed + idx)
-        # sampled_noise = torch.randn(
-        #     [1, args.num_output_frames, 16, 60, 104], device=device, dtype=torch.bfloat16
-        # )
+
 
     sample_report_timing = args.report_timing and i >= 1
-    
-    # Build a fresh probe per prompt (resets rolling buffer and records).
-    # sample_id = f"sample{idx:04d}"
-    # if _probe_enabled:
-    #     probe_run_dir = os.path.join(_probe_kwargs["output_dir"], sample_id)
-    #     rect_probe = TeacherRectificationProbe(
-    #         **{**_probe_kwargs, "output_dir": probe_run_dir, "sample_id": sample_id}
-    #     )
-    # else:
-    #     rect_probe = TeacherRectificationProbe(enabled=False)
 
-    # Encode prompt once so we can pass embeddings to the probe (offline scoring).
-    # We rely on the pipeline to re-encode internally; here we just grab the embeds.
-    # _prompt_embeds_for_probe = None
-    # if _probe_enabled:
-    #     with torch.inference_mode():
-    #         _cond = pipeline.text_encoder(text_prompts=prompts)
-    #         _prompt_embeds_for_probe = _cond["prompt_embeds"].detach().to("cpu")
     for sample_idx in range(args.num_samples):
-        output_path = os.path.join(
-            args.output_folder,
-            f'{prompt[:100]}-{sample_idx}.mp4'
-        )
+        file_name = f"{prompt[:args.name_length]}-{sample_idx}.mp4" if args.name_length != -1 else f"{prompt}-{sample_idx}.mp4" 
+        output_path = os.path.join(args.output_folder, file_name)
 
         if os.path.exists(output_path):
             print(f'Video {sample_idx} has been generated. Pass!')
             continue
 
-        sample_seed = args.seed + idx * args.num_samples + sample_idx
+        sample_seed = args.seed + idx * 1000 + sample_idx
         set_seed(sample_seed)
 
         sampled_noise = torch.randn(
@@ -325,15 +308,15 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
             print(f"[Sample {i}] {num_pixel_frames} frames, "
                 f"latency {latency:.2f}s, FPS {fps:.2f}")
         current_video = rearrange(video, 'b t c h w -> b t h w c').cpu()
-        all_video.append(current_video)
-        num_generated_frames += latents.shape[1]
+        # all_video.append(current_video)
+        # num_generated_frames += latents.shape[1]
 
         # Final output video
-        clean_latent = latents[0].cpu() 
-        video = 255.0 * torch.cat(all_video, dim=1)
+        # clean_latent = latents[0].cpu() 
+        # video = 255.0 * torch.cat(all_video, dim=1)
+        current_video = (255.0 * current_video).clamp(0, 255).to(torch.uint8)
 
         # Clear VAE cache
         pipeline.vae.model.clear_cache()
 
-        write_video(output_path, video[0], fps=16)
-        
+        write_video(output_path, current_video[0], fps=16)

@@ -6,6 +6,7 @@ from .self_gradient_forcing_training import SelfGradientForcingTrainingPipeline
 from .causal_recache_inference import CausalRecacheInferencePipeline
 from .teacher_forcing_training import TeacherForcingTrainingPipeline
 from .bidirectional_training import BidirectionalTrainingPipeline
+from .self_forcing_training import SelfForcingTrainingPipeline
 __all__ = [
     "BidirectionalDiffusionInferencePipeline",
     "BidirectionalInferencePipeline",
@@ -13,5 +14,6 @@ __all__ = [
     "CausalInferencePipeline",
     "SelfGradientForcingTrainingPipeline",
     "TeacherForcingTrainingPipeline",
-    "BidirectionalTrainingPipeline"
+    "BidirectionalTrainingPipeline",
+    "SelfForcingTrainingPipeline"
 ]
