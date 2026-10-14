@@ -42,13 +42,14 @@ class BaseModel(nn.Module):
         self.real_model_name = getattr(args, "real_name", "Wan2.1-T2V-1.3B")
         self.fake_model_name = getattr(args, "fake_name", "Wan2.1-T2V-1.3B")
         self.iscausal = getattr(args, "causal", True)
+        self.timestep_shift = getattr(args, "timestep_shift", 5.0)
         self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=self.iscausal)
         self.generator.model.requires_grad_(True)
 
-        self.real_score = WanDiffusionWrapper(model_name=self.real_model_name, is_causal=False)
+        self.real_score = WanDiffusionWrapper(model_name=self.real_model_name, timestep_shift=self.timestep_shift, is_causal=False)
         self.real_score.model.requires_grad_(False)
 
-        self.fake_score = WanDiffusionWrapper(model_name=self.fake_model_name, is_causal=False)
+        self.fake_score = WanDiffusionWrapper(model_name=self.fake_model_name, timestep_shift=self.timestep_shift, is_causal=False)
         self.fake_score.model.requires_grad_(True)
 
         self.text_encoder = WanTextEncoder()
@@ -581,6 +582,15 @@ class SelfForcingModel(BaseModel):
                               device=self.device, dtype=self.dtype),
             **conditional_dict,
         )
+
+        # The autoregressive KV-cache/cross-attn cache are only needed during the rollout
+        # above. Drop them now instead of leaving them resident while fake_score/real_score
+        # run afterward (compute_distribution_matching_loss) - they get reallocated fresh
+        # on the next rollout call regardless.
+        if self.inference_pipeline is not None:
+            self.inference_pipeline.kv_cache1 = None
+            self.inference_pipeline.crossattn_cache = None
+
         # Slice last 21 frames
         if pred_image_or_video.shape[1] > 21:
             with torch.no_grad():

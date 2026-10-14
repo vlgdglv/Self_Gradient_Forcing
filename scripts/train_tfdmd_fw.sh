@@ -6,7 +6,7 @@ PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 cd "$PROJECT_ROOT"
 
 CONFIG="${1:-configs/teacher_forcing_dmd_framewise.yaml}"
-LOGDIR="${2:-training_outputs/teacher_forcing_dmd_framewise_trainable_real_warmup100}"
+LOGDIR="${2:-training_outputs/teacher_forcing_dmd_framewise_trainable_real_warmup200}"
 NUM_GPUS="${NUM_GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-29533}"
 

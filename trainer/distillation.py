@@ -44,7 +44,7 @@ class Trainer:
             wandb.login(host=config.wandb_host)
             wandb.init(
                 config=OmegaConf.to_container(config, resolve=True),
-                name=config.config_name,
+                name=config.wandb_run_name,
                 mode="online",
                 entity=config.wandb_entity,
                 project=config.wandb_project,
@@ -69,13 +69,15 @@ class Trainer:
 
         # Save pretrained model state_dicts to CPU
         self.fake_score_state_dict_cpu = self.model.fake_score.state_dict()
-
+        print("MODEL REAL timeshift:", self.model.real_score.scheduler.shift)
+        print("MODEL FAKE timeshift:", self.model.fake_score.scheduler.shift)
         self.model.generator = fsdp_wrap(
             self.model.generator,
             sharding_strategy=config.sharding_strategy,
             mixed_precision=config.mixed_precision,
             wrap_strategy=config.generator_fsdp_wrap_strategy,
-            cpu_offload=False
+            min_num_params=getattr(config, "fsdp_min_num_params", int(5e7)),
+            cpu_offload=True
         )
 
         self.model.real_score = fsdp_wrap(
@@ -83,6 +85,7 @@ class Trainer:
             sharding_strategy=config.sharding_strategy,
             mixed_precision=config.mixed_precision,
             wrap_strategy=config.real_score_fsdp_wrap_strategy,
+            min_num_params=getattr(config, "fsdp_min_num_params", int(5e7)),
             cpu_offload=False
         )
 
@@ -91,6 +94,7 @@ class Trainer:
             sharding_strategy=config.sharding_strategy,
             mixed_precision=config.mixed_precision,
             wrap_strategy=config.fake_score_fsdp_wrap_strategy,
+            min_num_params=getattr(config, "fsdp_min_num_params", int(5e7)),
             cpu_offload=False
         )
 
@@ -272,6 +276,9 @@ class Trainer:
 
         # Step 3: Store gradients for the generator (if training the generator)
         if train_generator:
+            self.model.fake_score.eval()
+            self.model.real_score.eval()
+            self.model.generator.train()
             generator_loss, generator_log_dict = self.model.generator_loss(
                 image_or_video_shape=image_or_video_shape,
                 conditional_dict=conditional_dict,
@@ -279,7 +286,7 @@ class Trainer:
                 clean_latent=clean_latent,
                 initial_latent=image_latent if self.config.i2v else None
             )
-           
+        
             generator_loss.backward()
             generator_grad_norm = self.model.generator.clip_grad_norm_(
                 self.max_grad_norm_generator)
@@ -291,6 +298,9 @@ class Trainer:
         else:
             generator_log_dict = {}
 
+        self.model.fake_score.train()
+        self.model.real_score.eval()
+        self.model.generator.eval()
         # Step 4: Store gradients for the critic (if training the critic)
         critic_loss, critic_log_dict = self.model.critic_loss(
             image_or_video_shape=image_or_video_shape,
@@ -330,7 +340,6 @@ class Trainer:
 
             # Train the generator
             if TRAIN_GENERATOR:
-                self.generator_optimizer.zero_grad(set_to_none=True)
                 
                 batch = next(self.dataloader)
                 generator_log_dict = self.fwdbwd_one_step(batch, True)
@@ -339,7 +348,7 @@ class Trainer:
                 if self.generator_ema is not None:
                     self.generator_ema.update(self.model.generator)
                 
-                
+                self.generator_optimizer.zero_grad(set_to_none=True)
                 
 
             # Train the critic
@@ -397,11 +406,11 @@ class Trainer:
                 if not self.disable_wandb:
                     wandb.log(wandb_loss_dict, step=self.step)
 
-            if self.step % self.config.gc_interval == 0:
-                if dist.get_rank() == 0:
-                    logging.info("DistGarbageCollector: Running GC.")
-                gc.collect()
-                torch.cuda.empty_cache()
+            # if self.step % self.config.gc_interval == 0:
+            #     if dist.get_rank() == 0:
+            #         logging.info("DistGarbageCollector: Running GC.")
+            #     gc.collect()
+            #     torch.cuda.empty_cache()
 
             if self.is_main_process:
                 current_time = time.time()

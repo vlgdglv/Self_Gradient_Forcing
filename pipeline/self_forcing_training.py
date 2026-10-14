@@ -83,33 +83,33 @@ class SelfForcingTrainingPipeline:
         )
 
         # Step 1: Initialize KV cache to all zeros
-        self._initialize_kv_cache(
-            batch_size=batch_size, dtype=noise.dtype, device=noise.device
-        )
-        self._initialize_crossattn_cache(
-            batch_size=batch_size, dtype=noise.dtype, device=noise.device
-        )
-        # if self.kv_cache1 is None:
-        #     self._initialize_kv_cache(
-        #         batch_size=batch_size,
-        #         dtype=noise.dtype,
-        #         device=noise.device,
-        #     )
-        #     self._initialize_crossattn_cache(
-        #         batch_size=batch_size,
-        #         dtype=noise.dtype,
-        #         device=noise.device
-        #     )
-        # else:
-        #     # reset cross attn cache
-        #     for block_index in range(self.num_transformer_blocks):
-        #         self.crossattn_cache[block_index]["is_init"] = False
-        #     # reset kv cache
-        #     for block_index in range(len(self.kv_cache1)):
-        #         self.kv_cache1[block_index]["global_end_index"] = torch.tensor(
-        #             [0], dtype=torch.long, device=noise.device)
-        #         self.kv_cache1[block_index]["local_end_index"] = torch.tensor(
-        #             [0], dtype=torch.long, device=noise.device)
+        # self._initialize_kv_cache(
+        #     batch_size=batch_size, dtype=noise.dtype, device=noise.device
+        # )
+        # self._initialize_crossattn_cache(
+        #     batch_size=batch_size, dtype=noise.dtype, device=noise.device
+        # )
+        if self.kv_cache1 is None:
+            self._initialize_kv_cache(
+                batch_size=batch_size,
+                dtype=noise.dtype,
+                device=noise.device,
+            )
+            self._initialize_crossattn_cache(
+                batch_size=batch_size,
+                dtype=noise.dtype,
+                device=noise.device
+            )
+        else:
+            # reset cross attn cache
+            for block_index in range(self.num_transformer_blocks):
+                self.crossattn_cache[block_index]["is_init"] = False
+            # reset kv cache
+            for block_index in range(len(self.kv_cache1)):
+                self.kv_cache1[block_index]["global_end_index"] = torch.tensor(
+                    [0], dtype=torch.long, device=noise.device)
+                self.kv_cache1[block_index]["local_end_index"] = torch.tensor(
+                    [0], dtype=torch.long, device=noise.device)
 
         # Step 2: Cache context feature
         current_start_frame = 0

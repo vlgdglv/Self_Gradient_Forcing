@@ -2,7 +2,7 @@ generator_ckpt: training_outputs/teacher_forcing_dmd_chunkwise_trainable_real/ch
 generator_fsdp_wrap_strategy: size
 real_score_fsdp_wrap_strategy: size
 fake_score_fsdp_wrap_strategy: size
-real_name: Wan2.1-T2V-14B
+real_name: Wan2.1-T2V-1.3B
 fake_name: Wan2.1-T2V-1.3B
 text_encoder_fsdp_wrap_strategy: size
 denoising_step_list:
@@ -22,6 +22,7 @@ wandb_host: https://api.wandb.ai
 wandb_key: {not here}
 wandb_entity: vlgunsdaddy
 wandb_project: VideoAR
+wandb_run_name: tfdmd_tr1.5k_self_forcing_chunkwise
 sharding_strategy: hybrid_full
 lr: 2.0e-06
 lr_critic: 4.0e-07
@@ -29,14 +30,14 @@ beta1: 0.0
 beta2: 0.999
 beta1_critic: 0.0
 beta2_critic: 0.999
-batch_size: 1
+batch_size: 2
 ema_weight: 0.99
 ema_start_step: 200
 # total_batch_size: 8
 log_iters: 250
 negative_prompt: '色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走'
-dfake_gen_update_ratio: 5
-max_steps: 3200
+dfake_gen_update_ratio: 3
+max_steps: 3000
 image_or_video_shape:
 - 1
 - 21
@@ -55,9 +56,18 @@ model_kwargs:
   sink_size: 3
 data_path: prompts/vidprom_filtered_extended.txt
 
-config_name: tfdmd_trainable_real1.5k_self_forcing_chunkwise
+config_name: tfdmd_tr1.5k_self_forcing_chunkwise
 forcing_type: self_forcing
 
+# Lower than the 5e7 (50M param) default: with size_based_auto_wrap_policy, a smaller
+# threshold creates more, smaller FSDP units, so each all-gather/reduce-scatter only
+# materializes a smaller unsharded slice of the model at a time (lower peak memory,
+# more communication rounds - pure time-for-space, no change to any computed value).
+# Tune down further (e.g. 5_000_000) if still OOMing; tune up if step time regresses.
+# generator_fsdp_min_num_params: 10_000_000
+# real_score_fsdp_min_num_params: 10_000_000
+# fake_score_fsdp_min_num_params: 10_000_000
+# text_encoder_fsdp_min_num_params: 10_000_000
 # NO SGF
 # grad_mode: self_gradient_forcing
 # per_rank_exit_step: true

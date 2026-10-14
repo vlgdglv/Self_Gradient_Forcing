@@ -55,7 +55,7 @@ ema_weight: 0.99
 ema_start_step: 200
 batch_size: 4
 dfake_gen_update_ratio: 2
-dreal_gen_update_ratio: 2
+dreal_critic_update_ratio: 2
 critic_warmup_step: 0
 seed: 42
 

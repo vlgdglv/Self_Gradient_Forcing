@@ -28,7 +28,7 @@ CKPT="${1:-training_outputs/${RUN_NAME}/model.pt}"
 [[ $# -gt 0 ]] && shift
 
 PROMPTS="${1:-prompts/vbench_all_dimension.txt}"
-EXTEND_PROMPTS="${EXTEND_PROMPTS:-"prompts/vbench_all_dimension_longer.txt"}"
+EXTEND_PROMPTS="${EXTEND_PROMPTS:-"prompts/all_dimension_aug_wanx_seed42.txt"}"
 
 [[ -f "$EXTEND_PROMPTS" ]] || {
     echo "ERROR: extended prompt file not found: $EXTEND_PROMPTS" >&2

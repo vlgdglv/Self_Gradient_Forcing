@@ -15,6 +15,8 @@ import time
 import os
 
 from utils.distributed import EMA_FSDP, barrier, fsdp_wrap, fsdp_state_dict, launch_distributed_job
+from collections import deque
+from datetime import timedelta
 
 
 class Trainer:
@@ -108,14 +110,14 @@ class Trainer:
         self.fake_critic_optimizer = torch.optim.AdamW(
             [param for param in self.model.fake_score.parameters()
              if param.requires_grad],
-            lr=config.lr_critic if hasattr(config, "lr_critic") else config.lr,
+            lr=config.lr_fake_critic if hasattr(config, "lr_fake_critic") else config.lr,
             betas=(config.beta1_critic, config.beta2_critic),
             weight_decay=config.weight_decay
         )
         self.real_critic_optimizer = torch.optim.AdamW(
             [param for param in self.model.real_score.parameters()
              if param.requires_grad],
-            lr=config.lr_critic if hasattr(config, "lr_critic") else config.lr,
+            lr=config.lr_real_critic if hasattr(config, "lr_real_critic") else config.lr,
             betas=(config.beta1_critic, config.beta2_critic),
             weight_decay=config.weight_decay
         )
@@ -141,7 +143,7 @@ class Trainer:
             print(config)
         self.step = 0
         self.critic_warmup_step = getattr(config, "critic_warmup_step", 100)
-
+        self.save_critic = False
         ##############################################################################################################
         # 7. (If resuming) Load the model and optimizer, lr_scheduler, ema's statedicts
         # if getattr(config, "generator_ckpt", False):
@@ -206,19 +208,20 @@ class Trainer:
         state_dict = {
             "generator": generator_state_dict
         }
-
-        critic_state_dict = {"critic": fsdp_state_dict(self.model.fake_score)}
+        if self.save_critic:
+            critic_state_dict = {"critic": fsdp_state_dict(self.model.fake_score)}
 
         if self.is_main_process:
             os.makedirs(os.path.join(self.output_path,
                         f"checkpoint_model_{self.step:06d}"), exist_ok=True)
             torch.save(state_dict, os.path.join(self.output_path,
                        f"checkpoint_model_{self.step:06d}", "model.pt"))
-            torch.save(critic_state_dict, os.path.join(self.output_path,
-                       f"checkpoint_model_{self.step:06d}", "critic_model.pt"))
+            print("Model saved to", os.path.join(self.output_path, f"checkpoint_model_{self.step:06d}",  "model.pt"))
             
-            print("Model saved to", os.path.join(self.output_path, f"checkpoint_model_{self.step:06d}", 
-            "model.pt and critic_model.pt"))
+            if self.save_critic:
+                torch.save(critic_state_dict, os.path.join(self.output_path,
+                        f"checkpoint_model_{self.step:06d}", "critic_model.pt"))
+            
 
     def train_one_step_generator(self, ode_latent, conditional_dict, loss_scale=1.0):
         self.model.generator.train()
@@ -335,11 +338,15 @@ class Trainer:
             self.unconditional_dict = self.model.text_encoder(
                 text_prompts=[self.config.negative_prompt] * batch_size
             )
+
+        if self.is_main_process:
+            eta_times = deque(maxlen=50)
+            eta_last_time = time.perf_counter()
             
         while max_steps < 0 or self.step < max_steps:
             critic_warmup = self.step < self.critic_warmup_step
             do_train_generator = not critic_warmup and self.step > 0 and self.step % self.config.dfake_gen_update_ratio == 0
-            do_train_real_critic = critic_warmup or self.step > 0 and self.step % self.config.dreal_gen_update_ratio == 0
+            do_train_real_critic = critic_warmup or self.step > 0 and self.step % self.config.dreal_critic_update_ratio == 0
             do_train_fake_critic = True
             
             # Get the next batch of text prompts
@@ -385,3 +392,19 @@ class Trainer:
                     self.previous_time = current_time
 
             self.step += 1
+            if self.is_main_process:
+                now = time.perf_counter()
+                eta_times.append(now - eta_last_time)
+                eta_last_time = now
+
+                if max_steps > 0 and (self.step % 10 == 0 or self.step == max_steps):
+                    avg_step_time = sum(eta_times) / len(eta_times)
+                    remaining_steps = max(0, max_steps - self.step)
+                    eta_seconds = remaining_steps * avg_step_time
+                    print(
+                        f"[ETA] Step {self.step}/{max_steps} "
+                        f"({100 * self.step / max_steps:.1f}%) | "
+                        f"{avg_step_time:.2f}s/step | "
+                        f"Remaining: {timedelta(seconds=int(eta_seconds))}",
+                        flush=True,
+                    )

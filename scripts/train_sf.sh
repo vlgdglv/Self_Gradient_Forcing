@@ -6,7 +6,7 @@ PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 cd "$PROJECT_ROOT"
 
 CONFIG="${1:-configs/self_forcing_chunkwise.yaml}"
-LOGDIR="${2:-"training_outputs/tfdmd_tr1006_1.5k_self_forcing"}"
+LOGDIR="${2:-"training_outputs/tfdmd_tr1.5k_self_forcing_chunkwise"}"
 NUM_GPUS="${NUM_GPUS:-8}"
 MASTER_PORT="${MASTER_PORT:-29531}"
 
@@ -39,4 +39,4 @@ torchrun \
   --no_visualize  \
   2>&1 | tee "$LOGDIR/train_shell.log"
 
-  # --disable-wandb
+#  --disable-wandb

@@ -20,6 +20,7 @@ class TeacherForcingDMD(nn.Module):
         # Initialize models.
         self.iscausal = getattr(args, "causal", True)
         self.timestep_shift = getattr(args, "timestep_shift", 5.0)
+        self.critic_timestep_shift = getattr(args, "critic_timestep_shift", self.timestep_shift)
         self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=self.iscausal)
         self.generator.model.requires_grad_(True)
 
@@ -69,8 +70,7 @@ class TeacherForcingDMD(nn.Module):
         self.same_step_across_blocks = getattr(args, "same_step_across_blocks", True)
         self.num_training_frames = getattr(args, "num_training_frames", 21)
 
-        if self.num_frame_per_block > 1:
-            self.generator.model.num_frame_per_block = self.num_frame_per_block
+        self.generator.model.num_frame_per_block = self.num_frame_per_block
 
         self.independent_first_frame = getattr(args, "independent_first_frame", False)
         if self.independent_first_frame:
@@ -83,6 +83,8 @@ class TeacherForcingDMD(nn.Module):
         self.real_guidance_scale = getattr(args, "guidance_scale", 5.0)
         self.ts_schedule = getattr(args, "ts_schedule", True)
         self.ts_schedule_max = getattr(args, "ts_schedule_max", False)
+        self.sample_min_ts = getattr(args, "sample_min_ts", 20.0)
+        self.sample_max_ts = getattr(args, "sample_max_ts", 980.0)
         self.min_score_timestep = getattr(args, "min_score_timestep", 0)
 
         if getattr(self.scheduler, "alphas_cumprod", None) is not None:
@@ -131,10 +133,10 @@ class TeacherForcingDMD(nn.Module):
         # --------------------------------------------------
         # 3. Sample critic timestep
         # --------------------------------------------------
-        tau = torch.randint(0, 1000, (batch_size, 1), device=self.device).float()
-        u = tau / 1000.0
-        tau = self.timestep_shift * u / (1.0 + (self.timestep_shift - 1.0) * u) * 1000.0
-        tau = tau.clamp(20.0, 980.0)
+        tau = self.sample_timestep(
+            batch_size=batch_size, device=self.device, shift=self.critic_timestep_shift, 
+            t_min=self.sample_min_ts, t_max=self.sample_max_ts
+        )
         critic_timestep = tau.repeat(1, prefix_frames)
 
         # --------------------------------------------------
@@ -232,10 +234,10 @@ class TeacherForcingDMD(nn.Module):
         # --------------------------------------------------
         # 3. Sample critic timestep
         # --------------------------------------------------
-        tau = torch.randint(0, 1000, (batch_size, 1), device=self.device).float()
-        u = tau / 1000.0
-        tau = self.timestep_shift * u / (1.0 + (self.timestep_shift - 1.0) * u) * 1000.0
-        tau = tau.clamp(20.0, 980.0)
+        tau = self.sample_timestep(
+            batch_size=batch_size, device=self.device, shift=self.critic_timestep_shift, 
+            t_min=self.sample_min_ts, t_max=self.sample_max_ts
+        )
         critic_timestep = tau.repeat(1, prefix_frames)
 
         # --------------------------------------------------
@@ -296,7 +298,6 @@ class TeacherForcingDMD(nn.Module):
         batch_size = clean_latent.shape[0]
         
         # 1. sample one AR leaf
-        total_frames = clean_latent.shape[1] // self.num_frame_per_block
         
         # if dist.get_rank() == 0:
         #     chunk_idx = torch.randint(low=0, high=total_frames, size=(1,), device=self.device)
@@ -304,8 +305,8 @@ class TeacherForcingDMD(nn.Module):
         #     chunk_idx = torch.zeros(1, dtype=torch.long, device=self.device)
         # dist.broadcast(chunk_idx, src=0)
         # chunk_idx = int(chunk_idx.item())
-        total_chunks = (clean_latent.shape[1] // self.num_frame_per_block)
-        chunk_idx = (global_step % total_chunks)
+        total_chunks = clean_latent.shape[1] // self.num_frame_per_block
+        chunk_idx = global_step % total_chunks
         
         ctx_end = chunk_idx * self.num_frame_per_block
         x_ctx = clean_latent[:, :ctx_end]
@@ -321,11 +322,11 @@ class TeacherForcingDMD(nn.Module):
         prefix_clean = torch.cat([x_ctx, x_fake.detach()], dim=1)
         
         # 3. independent DMD timestep
-        tau = torch.randint(low=0, high=1000, size=(batch_size, 1), device=self.device,).float()
-        u = tau / 1000.0
-        tau = (self.timestep_shift * u / (1.0 + (self.timestep_shift - 1.0) * u)* 1000.0)
-        tau = tau.clamp(20.0, 980.0)
-        
+        tau = self.sample_timestep(
+            batch_size=batch_size, device=self.device, shift=self.critic_timestep_shift, 
+            t_min=self.sample_min_ts, t_max=self.sample_max_ts
+        )
+
         noise = torch.randn_like(prefix_clean, dtype=self.dtype, device=self.device)
 
         prefix_tau = self.scheduler.add_noise(
@@ -443,7 +444,7 @@ class TeacherForcingDMD(nn.Module):
                         [batch_size * frame_len],
                         next_timestep,
                         device=self.device,
-                        dtype=torch.long,
+                        dtype=torch.float32,
                     ),
                 ).unflatten(0, x0.shape[:2],)
 
@@ -536,11 +537,6 @@ class TeacherForcingDMD(nn.Module):
         for start in range(0, F, block):
             ctx_chunk = context[:, start:start + block]
 
-            # timestep = torch.zeros(
-            #     [B, block],
-            #     device=self.device,
-            #     dtype=torch.long,
-            # )
             ctx_t = self._expand_timestep(
                 timestep=context_timestep,
                 batch_size=B,
@@ -559,6 +555,18 @@ class TeacherForcingDMD(nn.Module):
 
         return kv_cache, crossattn_cache, frame_seq_len
 
+
+    def sample_timestep(
+        self,
+        batch_size,
+        device,
+        shift=5.0,
+        t_min=20.0,
+        t_max=980.0,
+    ):
+        u = torch.rand(batch_size, 1, device=device, dtype=torch.float32)
+        tau = (shift * u / (1.0 + (shift - 1.0) * u)) * 1000.0
+        return tau.clamp(t_min, t_max)
 
     def _expand_timestep(
         self,

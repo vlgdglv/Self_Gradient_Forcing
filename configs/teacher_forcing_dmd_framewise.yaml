@@ -45,8 +45,10 @@ mixed_precision: true
 gradient_checkpointing: true
 sharding_strategy: hybrid_full
 
-lr: 2.0e-6
-lr_critic: 1.0e-06
+lr: 5.0e-7
+lr_critic: 1.0e-6
+lr_fake_critic: 1.0e-6
+lr_real_critic: 1.0e-6
 beta1: 0.0
 beta2: 0.999
 beta1_critic: 0.0
@@ -54,9 +56,9 @@ beta2_critic: 0.999
 ema_weight: 0.99
 ema_start_step: 200
 batch_size: 4
-dfake_gen_update_ratio: 2
+dfake_gen_update_ratio: 4
 dreal_gen_update_ratio: 2
-critic_warmup_step: 100
+critic_warmup_step: 200
 seed: 42
 
 # ---------------------------------
@@ -78,7 +80,7 @@ wandb_host: https://api.wandb.ai
 wandb_key: {not here}
 wandb_entity: vlgunsdaddy
 wandb_project: VideoAR
-wandb_run_name: teacher_forcing_dmd_framewise_trainable_real_warmup100
+wandb_run_name: teacher_forcing_dmd_framewise_trainable_real_warmup200
 
 
 # ---------------------------------
